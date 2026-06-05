@@ -29,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--max-depth", type=int, default=3, help="max link depth")
     c.add_argument("--max-extracts", type=int, default=10,
                    help="max discovered pages to extract from (maxExtracts)")
+    c.add_argument("--target-records", type=int, default=None,
+                   help="stop once ~N records are collected (ignores max-pages/max-extracts)")
     c.add_argument("--cross-domain", action="store_true",
                    help="allow following links off the seed domain")
     c.add_argument("--extract", action="store_true",
@@ -53,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
             same_domain=not args.cross_domain,
             extract=args.extract or args.export,
             export_after=args.export,
+            target_records=args.target_records,
         )
     return 0
 

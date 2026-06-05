@@ -101,7 +101,7 @@ class LinkClassifier:
         return out
 
     def propose_urls(self, page_url: str, sample_urls: list[str],
-                     intent: CrawlIntent, max_per_location: int = 3) -> list[str]:
+                     intent: CrawlIntent, max_per_segment: int = 3) -> list[str]:
         """FetchFox-style "query mode": invent same-domain URLs to visit.
 
         Given example URLs seen on the page plus the target entity/locations, ask
@@ -114,29 +114,33 @@ class LinkClassifier:
         """
         if self.client is None:
             return []
+        segments = intent.segments or intent.states
+        if not segments:
+            return []  # nothing enumerated to expand toward -> no proposals
         domain = urlparse(page_url).netloc.lower()
         samples = "\n".join(f"- {u}" for u in sample_urls[:20])
-        locations = ", ".join(intent.states) if intent.states else "(any location)"
-        n = max_per_location
+        kind = intent.segment_kind or "target"
+        seg_list = ", ".join(segments)
+        n = max_per_segment
         system = (
             f"You help a crawler find pages of '{intent.entity}' records on the "
             f"site '{domain}'. From the EXAMPLE URLs, infer the site's URL "
             "pattern, then output OTHER same-domain URLs (NOT already in the "
-            "examples) that most likely list or detail the target records for the "
-            "requested locations.\n"
-            f"IMPORTANT: produce {n} URLs for EVERY requested location, one for "
-            f"each of that location's {n} largest cities, so at least one exists. "
-            "Do not stop at one city per location.\n"
-            "Example: if the pattern is '.../reviews/<city>-<st>' and locations "
+            f"examples) that most likely list or detail the target records for the "
+            f"requested {kind} values.\n"
+            f"IMPORTANT: produce up to {n} URLs for EVERY requested {kind} value "
+            "below, covering its most likely/largest variants, so at least one "
+            f"exists. Do not stop at one URL per {kind}.\n"
+            "Example: if the pattern is '.../reviews/<city>-<st>' and the values "
             "are [CA, TX], output: .../reviews/los-angeles-ca, "
-            ".../reviews/san-diego-ca, .../reviews/san-jose-ca, "
-            ".../reviews/houston-tx, .../reviews/dallas-tx, .../reviews/austin-tx.\n"
+            ".../reviews/san-diego-ca, .../reviews/houston-tx, "
+            ".../reviews/dallas-tx (real localities of each).\n"
             'Output ONLY JSON: {"urls": ["https://...", ...]}. Every URL must be '
             f"on the exact domain '{domain}'. No prose."
         )
         user = (
             f"Target entity: {intent.entity}\n"
-            f"Target locations: {locations}\n"
+            f"Requested {kind} values: {seg_list}\n"
             f"Full request: {intent.description}\n\n"
             f"EXAMPLE URLs on the page:\n{samples}"
         )
@@ -154,7 +158,7 @@ class LinkClassifier:
                         and u.rstrip("/") not in seen):
                     seen.add(u.rstrip("/"))
                     out.append(u)
-        cap = n * max(1, len(intent.states or [1]))
+        cap = n * max(1, len(segments))
         return out[:cap]
 
 

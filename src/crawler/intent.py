@@ -42,7 +42,16 @@ class CrawlIntent(BaseModel):
     entity: str = "real estate agent"
     description: str = ""
     fields: list[str] = Field(default_factory=lambda: list(EXPORT_HEADERS))
-    states: list[str] = Field(default_factory=lambda: ["NJ", "PA", "IN"])
+    states: list[str] = Field(default_factory=list)
+    # Generic "target segments": the distinct values the user wants results spread
+    # ACROSS -- states, brands, categories, cities, anything the prompt enumerates.
+    # This is the location-agnostic generalization of `states`; it drives result
+    # filtering, balanced coverage, and URL proposal so the pipeline works for ANY
+    # request, not just real-estate-by-state. Empty when the prompt enumerates no
+    # targets. `segment_kind` is a short noun for what they are ("US state",
+    # "brand", "category", ...).
+    segments: list[str] = Field(default_factory=list)
+    segment_kind: str = ""
     include_keywords: list[str] = Field(default_factory=lambda: list(_DEFAULT_INCLUDE))
     exclude_keywords: list[str] = Field(default_factory=lambda: list(_DEFAULT_EXCLUDE))
     seed_url: str = ""
@@ -51,6 +60,9 @@ class CrawlIntent(BaseModel):
     def merge_states(self, override: Optional[list[str]]) -> "CrawlIntent":
         if override:
             self.states = list(override)
+            if not self.segments:  # explicit location override seeds the segments
+                self.segments = list(override)
+                self.segment_kind = self.segment_kind or "US state"
         return self
 
 
@@ -61,6 +73,11 @@ _SYSTEM = (
     '  "entity": short noun phrase for the record type (e.g. "real estate agent")\n'
     '  "fields": array of field names the user wants\n'
     '  "states": array of 2-letter US state codes mentioned, else []\n'
+    '  "segments": array of the distinct target VALUES the user wants results '
+    "spread across -- the states, brands, categories, cities, etc. they list "
+    "(e.g. [\"NJ\",\"PA\",\"NY\"] or [\"Dell\",\"HP\"]); [] if the prompt names none\n"
+    '  "segment_kind": a short noun for what those segments are (e.g. "US state", '
+    '"brand", "city", "category"); "" if none\n'
     '  "include_keywords": lowercase substrings in URLs/links that likely lead '
     "to the target listing pages (e.g. agents, our-team, directory, roster)\n"
     '  "exclude_keywords": lowercase substrings to avoid (login, careers, blog, '
@@ -101,6 +118,15 @@ class Planner:
             intent.fields = [str(f).strip() for f in data["fields"] if str(f).strip()]
         if isinstance(data.get("states"), list) and data["states"]:
             intent.states = [str(s).strip().upper()[:2] for s in data["states"]]
+        if isinstance(data.get("segments"), list) and data["segments"]:
+            intent.segments = [str(s).strip() for s in data["segments"] if str(s).strip()]
+        if data.get("segment_kind"):
+            intent.segment_kind = str(data["segment_kind"]).strip()
+        # Location prompts: if the model filled `states` but not `segments`, mirror
+        # them so the generic machinery has something to work with.
+        if not intent.segments and intent.states:
+            intent.segments = list(intent.states)
+            intent.segment_kind = intent.segment_kind or "US state"
         # Union LLM keywords with the robust defaults (defaults catch what the
         # model forgets; LLM adds site-specific hints).
         inc = {k.lower() for k in intent.include_keywords}

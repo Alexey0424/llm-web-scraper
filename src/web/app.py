@@ -75,7 +75,7 @@ def _error_detail(exc: Exception) -> tuple[str, dict | None]:
 
 def _run_crawl_job(url: str, prompt: str, states: list[str], max_pages: int,
                    max_depth: int, model: str | None = None,
-                   max_extracts: int = 10) -> None:
+                   max_extracts: int = 10, target_records: int | None = None) -> None:
     """Execute one free-form discovery + extraction crawl on a background thread."""
     store = _ff_store()
 
@@ -99,7 +99,7 @@ def _run_crawl_job(url: str, prompt: str, states: list[str], max_pages: int,
 
     try:
         stats = runner.run_crawl(store, url, prompt, states, max_pages, max_depth,
-                                 on_event, model, max_extracts)
+                                 on_event, model, max_extracts, target_records)
         n = stats.get("records", 0)
         cols = stats.get("columns", [])
         dp = _crawl["data_pages"]
@@ -195,6 +195,14 @@ def create_app() -> Flask:
             max_extracts = max(1, min(80, int(request.form.get("max_extracts", 10))))
         except ValueError:
             max_extracts = 10
+        # Optional record-target mode: a checkbox + count. When on, the crawl runs
+        # until ~N records are collected (maxVisits/maxExtracts are ignored).
+        target_records = None
+        if request.form.get("target_enabled") in ("on", "true", "1", "yes"):
+            try:
+                target_records = max(1, min(5000, int(request.form.get("target_records", 50))))
+            except ValueError:
+                target_records = 50
         if not url or not prompt:
             return jsonify(ok=False, error="A seed URL and a prompt are both required."), 400
 
@@ -207,7 +215,7 @@ def create_app() -> Flask:
 
         threading.Thread(
             target=_run_crawl_job,
-            args=(url, prompt, states, max_pages, 3, model, max_extracts),
+            args=(url, prompt, states, max_pages, 3, model, max_extracts, target_records),
             daemon=True,
         ).start()
         return jsonify(ok=True, url=url, states=states, model=model)

@@ -464,6 +464,15 @@
           <input type="number" name="max_extracts" id="crawl-maxextracts" value="10" min="1" max="80"
                  style="font:inherit; color:var(--ink); background:var(--surface-2); border:1px solid var(--border-2); border-radius:var(--r-sm); padding:8px 10px; width:70px">
         </div>
+        <div class="ctl-group">
+          <label class="ctl-label" for="crawl-target-toggle" style="display:flex; align-items:center; gap:6px; cursor:pointer"
+                 title="Crawl until about this many records are collected, then stop. Overrides Max visits / Max extracts.">
+            <input type="checkbox" name="target_enabled" id="crawl-target-toggle" value="on" style="cursor:pointer"> Stop at records
+          </label>
+          <input type="number" name="target_records" id="crawl-target" value="50" min="1" max="5000" disabled
+                 title="Target record count"
+                 style="font:inherit; color:var(--ink); background:var(--surface-2); border:1px solid var(--border-2); border-radius:var(--r-sm); padding:8px 10px; width:70px; opacity:.45">
+        </div>
         <button class="btn-primary btn-lg" type="submit" id="crawl-btn" style="margin-left:auto" data-busy="Discovering…">
           <span class="spinner"></span>
           <svg class="lead-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
@@ -808,6 +817,23 @@
   var crawlForm = $('#crawl-form'), crawlBtn = $('#crawl-btn'),
       crawlPanel = $('#crawlpanel'), crawlStream = $('#crawl-stream'), crawlPoll = null;
 
+  /* Record-target toggle: when on, drive the crawl by record count and grey out
+     Max visits / Max extracts (they're ignored server-side in target mode). */
+  (function () {
+    var tgl = $('#crawl-target-toggle'), tgt = $('#crawl-target'),
+        mp = $('#crawl-maxpages'), me = $('#crawl-maxextracts');
+    if (!tgl) return;
+    function sync() {
+      var on = tgl.checked;
+      [mp, me].forEach(function (el) {
+        if (el) { el.disabled = on; el.style.opacity = on ? '.4' : ''; }
+      });
+      if (tgt) { tgt.disabled = !on; tgt.style.opacity = on ? '' : '.45'; }
+    }
+    tgl.addEventListener('change', sync);
+    sync();
+  })();
+
   /* Populate the model dropdown from the Ollama server. */
   var modelSel = $('#crawl-model');
   if (modelSel) {
@@ -1002,7 +1028,7 @@
         does: 'Walks the site, scoring links, until maxVisits pages are fetched.',
         sub: [
           { t: 'Fetch', n: ['Scrapling stealth browser (headless, JS-rendered)', 'compliance-gated: robots (urllib.robotparser)', 'rate-limit: random 4–6s/domain (time.monotonic)', 'retry: exponential backoff', 'NO stealth-evasion / NO bypass'] },
-          { t: 'Propose URLs (query mode)', n: ['FetchFox-style: LLM invents target-location URLs not linked on the page', 'infers the site URL pattern from top-scored example links', 'asks for several localities per location (temp 0.5)', 'top priority (1.5) + shuffled so no location hogs budget', '#4: re-proposes for locations still uncovered'] },
+          { t: 'Propose URLs (query mode)', n: ['FetchFox-style: LLM invents URLs not linked on the page', 'infers the site URL pattern from top-scored example links', 'generic SEGMENTS (states, brands, categories...) from the prompt', 'asks for several values per requested segment (temp 0.5)', 'top priority (1.5) + shuffled; #4 re-proposes uncovered segments'] },
           { t: 'Score links', n: ['keyword substring score (+0.2/hit, −1 exclude)', 'pagination URLs boosted', 'LLM re-rank: values roster AND individual profile links', '#5 hub boost: +0.3 to links from index/hub pages', '#1 yield feedback: boost shapes that paid off, penalize dead ones'] },
           { t: 'Classify page', n: ['Scrapling get_all_text; count mailto/tel links', 'LLM: roster OR individual profile = data page', '#5: links_to_records flag (hub vs target)', '#2: fields_present — which requested fields are on the page'] },
           { t: 'Frontier', n: ['heapq binary-heap priority queue', 'scores negated (min-heap → max-priority)', 'itertools.count tie-break (stable)', 'set() visited/queued dedup', 'same registrable domain (last 2 labels)'] }
@@ -1013,7 +1039,9 @@
                 { lbl: 'Stops at', text: 'maxVisits pages, or an empty frontier' }] },
       { stage: 'Extract', title: 'Free-form extraction', module: 'crawler/freeform.py',
         does: 'For the most COMPLETE found pages (≤ maxExtracts), the LLM returns rows keyed by your columns.',
-        notes: [{ lbl: 'Order (#2)', text: 'pages ranked by how many requested fields appeared on them, so the fullest pages are extracted first' },
+        notes: [{ lbl: 'Segments', text: 'when the prompt enumerates targets (states, brands, categories…), records are kept ONLY if they match a requested segment — off-target rows are dropped' },
+                { lbl: 'Balance', text: 'with a record target on, the budget is split evenly across the requested segments so no single one dominates; the crawl stops once each has its share' },
+                { lbl: 'Order (#2)', text: 'pages ranked by how many requested fields appeared on them, so the fullest pages are extracted first' },
                 { lbl: 'Coverage (#2)', text: 'fields never seen on any page are reported as "not published by this source" instead of silently empty' },
                 { lbl: 'Reduce', text: 'BeautifulSoup (only spot — mutates DOM to inline mailto:/tel: as [email:]/[phone:] markers next to each agent)' },
                 { lbl: 'Chunk', text: 'overlapping windows (~6k chars, 400 overlap), capped per page' },

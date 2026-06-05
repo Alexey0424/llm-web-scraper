@@ -71,6 +71,8 @@ class DiscoveryCrawler:
         max_depth: int = 3,
         same_domain: bool = True,
         on_event=None,
+        on_data_page=None,
+        needed_segments=None,
     ):
         self.intent = intent
         self.client = client
@@ -79,6 +81,16 @@ class DiscoveryCrawler:
         self.max_depth = max_depth
         self.same_domain = same_domain
         self.on_event = on_event  # optional callable(dict) for live progress
+        # Optional callable(url, html, verdict) -> bool, invoked when a data page
+        # is found. Returning False stops the crawl (used for record-target mode:
+        # extract inline, reusing the fetched HTML, and stop once the target is
+        # met). None = classic two-phase (discover fully, extract afterwards).
+        self.on_data_page = on_data_page
+        # Optional callable() -> set[str] of segments still needing coverage. When
+        # set, the crawl skips URLs belonging to an already-full segment, so the
+        # budget reaches UNDER-covered segments instead of re-drilling a
+        # productive-but-full one (stops the yield-feedback from monopolizing).
+        self.needed_segments = needed_segments
         self.links = LinkClassifier(client)
         self.pages = PageClassifier(client)
 
@@ -101,11 +113,19 @@ class DiscoveryCrawler:
         shape_records: dict[str, int] = {}
         shape_seen: dict[str, int] = {}
         reproposed = False  # pattern re-proposal (#4) fires at most once
+        steer_segs = self.intent.segments or self.intent.states
 
         while len(frontier) and fetched < self.max_pages:
             item = frontier.pop()
             if item is None:
                 break
+            # Balance steering: skip a URL whose segment is already full, so the
+            # budget reaches under-covered segments (a skip is free -- no fetch).
+            if steer_segs and self.needed_segments is not None:
+                seg_of = url_segment(item.url, steer_segs)
+                if seg_of is not None and seg_of not in self.needed_segments():
+                    log.debug("crawl skip (segment %s full): %s", seg_of, item.url)
+                    continue
             t0 = time.monotonic()
             res = self.fetcher.get(item.url)
             secs = round(time.monotonic() - t0, 1)
@@ -140,6 +160,18 @@ class DiscoveryCrawler:
             self._emit(kind="visit", seconds=secs, url=item.url,
                        status="data_page" if is_data else "ok", note=note[:120],
                        fetched=fetched, data_pages=len(result.data_pages))
+
+            # Record-target mode: extract this data page inline (reusing the HTML)
+            # and stop the crawl if the callback says the target has been met.
+            if is_data and self.on_data_page is not None:
+                try:
+                    keep_going = self.on_data_page(item.url, res.content, verdict)
+                except Exception as exc:  # noqa: BLE001 - extraction must not crash the crawl
+                    log.warning("on_data_page failed for %s: %s", item.url, exc)
+                    keep_going = True
+                if keep_going is False:
+                    log.info("crawl stop: record target reached after %d page(s)", fetched)
+                    break
 
             if item.depth < self.max_depth:
                 links = extract_links(res.content, item.url, same_domain=self.same_domain)
@@ -185,14 +217,16 @@ class DiscoveryCrawler:
                 # Pattern re-proposal (#4): once a non-seed page confirms a
                 # productive URL shape but some target locations still have no data
                 # page, re-propose URLs for that shape covering the missing ones.
+                segs = self.intent.segments or self.intent.states
                 if (not reproposed and is_data and item.depth > 0
-                        and self.client is not None and self.intent.states):
+                        and self.client is not None and segs):
                     found_urls = [p.url for p in result.data_pages]
-                    missing = [loc for loc in self.intent.states
-                               if not location_covered(loc, found_urls)]
+                    needed = self.needed_segments() if self.needed_segments else set(segs)
+                    missing = [s for s in segs
+                               if s in needed and not segment_covered(s, found_urls)]
                     if missing:
                         reproposed = True
-                        narrowed = self.intent.model_copy(update={"states": missing})
+                        narrowed = self.intent.model_copy(update={"segments": missing})
                         extra = self.links.propose_urls(item.url, found_urls, narrowed)
                         for gen in extra:
                             frontier.push(gen, PROPOSED_URL_SCORE, 1, "(llm-reproposed)")
@@ -234,14 +268,15 @@ def url_shape(url: str) -> str:
     return f"{p.netloc.lower()}/{'/'.join(segs[:-1])}"
 
 
-def location_covered(loc: str, urls: list[str]) -> bool:
-    """Heuristic: is a target location already represented among these URLs?
+def segment_covered(seg: str, urls: list[str]) -> bool:
+    """Heuristic: is a target segment already represented among these URLs?
 
-    Matches a location token as a whole path segment or a ``city-<loc>`` /
-    ``<loc>-...`` slug, so short codes (``in``) don't match unrelated paths
-    (``/index``). Used to decide which locations still need URLs proposed (#4).
+    Matches a segment token as a whole path segment or a ``x-<seg>`` / ``<seg>-x``
+    slug, so short codes (``in``) don't match unrelated paths (``/index``). Used
+    to decide which segments still need URLs proposed (#4). Works for any segment
+    value that appears in URLs (state codes, brand slugs, ...).
     """
-    t = loc.strip().lower()
+    t = seg.strip().lower()
     if not t:
         return True
     for u in urls:
@@ -249,6 +284,23 @@ def location_covered(loc: str, urls: list[str]) -> bool:
             if seg == t or seg.endswith("-" + t) or seg.startswith(t + "-"):
                 return True
     return False
+
+
+def url_segment(url: str, segments: list[str]) -> str | None:
+    """Which target segment a URL belongs to, if any (else None).
+
+    Same whole-segment / slug match as :func:`segment_covered`, but returns the
+    matching value so the crawl can skip URLs of an already-full segment.
+    """
+    parts = urlparse(url).path.lower().split("/")
+    for s in segments:
+        t = s.strip().lower()
+        if not t:
+            continue
+        for part in parts:
+            if part == t or part.endswith("-" + t) or part.startswith(t + "-"):
+                return s
+    return None
 
 
 def diagnose(result: CrawlResult) -> str:
