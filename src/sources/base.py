@@ -149,6 +149,7 @@ class BaseFetcher:
 
         self.limiter = limiter or DomainRateLimiter(
             default_delay=rl.get("min_delay_seconds", 2.0),
+            max_delay=rl.get("max_delay_seconds"),
             overrides=rate_limits.get("overrides", {}),
         )
 

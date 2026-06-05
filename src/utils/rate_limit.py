@@ -2,31 +2,48 @@
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from urllib.parse import urlparse
 
 
 class DomainRateLimiter:
-    """Enforce a minimum delay between requests to the same domain.
+    """Enforce a randomized polite delay between requests to the same domain.
 
-    Thread-safe and process-local. ``sleep_fn`` is injectable so tests can run
-    without real waits.
+    The wait is a uniform random value in ``[min_delay, max_delay]`` so the
+    request cadence is human-like rather than a constant, robotic gap. The
+    minimum is always respected (jitter only adds time, never removes it), so
+    politeness is preserved. When no maximum is configured the delay is the
+    fixed minimum (original behaviour).
+
+    Thread-safe and process-local. ``sleep_fn`` and ``rand_fn`` are injectable
+    so tests can run without real waits or randomness.
     """
 
-    def __init__(self, default_delay: float = 2.0, overrides: dict | None = None, sleep_fn=time.sleep, clock=time.monotonic):
+    def __init__(self, default_delay: float = 2.0, overrides: dict | None = None,
+                 sleep_fn=time.sleep, clock=time.monotonic,
+                 max_delay: float | None = None, rand_fn=random.uniform):
         self.default_delay = default_delay
+        self.default_max = max_delay
         self.overrides = overrides or {}
         self._last: dict[str, float] = {}
         self._lock = threading.Lock()
         self._sleep = sleep_fn
         self._clock = clock
+        self._rand = rand_fn
 
     def _delay_for(self, domain: str) -> float:
         ov = self.overrides.get(domain)
         if isinstance(ov, dict) and "min_delay_seconds" in ov:
-            return float(ov["min_delay_seconds"])
-        return self.default_delay
+            lo = float(ov["min_delay_seconds"])
+            hi = ov.get("max_delay_seconds", self.default_max)
+        else:
+            lo = self.default_delay
+            hi = self.default_max
+        if hi is not None and float(hi) > lo:
+            return self._rand(lo, float(hi))
+        return lo
 
     def wait(self, url: str) -> float:
         """Block until it is polite to request ``url``. Returns seconds waited."""

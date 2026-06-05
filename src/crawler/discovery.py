@@ -17,8 +17,10 @@ source config for the existing extraction pipeline.
 from __future__ import annotations
 
 import logging
+import random
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from ..sources.base import HttpFetcher, make_fetcher
 from ..utils.provenance import now_iso
@@ -29,6 +31,11 @@ from .llm import OllamaClient
 
 log = logging.getLogger(__name__)
 
+# Priority for LLM-proposed target-location URLs. Deliberately above the 0..1
+# range that on-page link scores occupy, so the user's explicit location intent
+# is crawled (and extracted) before whatever the seed page happens to link to.
+PROPOSED_URL_SCORE = 1.5
+
 
 @dataclass
 class DiscoveredPage:
@@ -37,6 +44,7 @@ class DiscoveredPage:
     depth: int
     estimated_records: int
     reason: str
+    fields_found: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -89,6 +97,10 @@ class DiscoveryCrawler:
         blocked = 0
         errors = 0
         started = now_iso()
+        # Yield-feedback (#1): records observed / pages seen, keyed by URL shape.
+        shape_records: dict[str, int] = {}
+        shape_seen: dict[str, int] = {}
+        reproposed = False  # pattern re-proposal (#4) fires at most once
 
         while len(frontier) and fetched < self.max_pages:
             item = frontier.pop()
@@ -112,10 +124,15 @@ class DiscoveryCrawler:
             verdict = self.pages.classify(item.url, res.content, self.intent)
             note = verdict.reason
             is_data = verdict.is_data_page
+            # Record yield for this page's URL shape (feeds the feedback loop, #1).
+            sh = url_shape(item.url)
+            shape_seen[sh] = shape_seen.get(sh, 0) + 1
             if is_data:
+                shape_records[sh] = shape_records.get(sh, 0) + max(verdict.estimated_records, 1)
                 result.data_pages.append(DiscoveredPage(
                     url=item.url, score=max(item_score(item), 0.5), depth=item.depth,
                     estimated_records=verdict.estimated_records, reason=verdict.reason,
+                    fields_found=list(verdict.fields_found),
                 ))
                 note = f"DATA PAGE (~{verdict.estimated_records}): {verdict.reason}"
             result.visited.append({"url": item.url, "status": "ok", "note": note})
@@ -126,9 +143,62 @@ class DiscoveryCrawler:
 
             if item.depth < self.max_depth:
                 links = extract_links(res.content, item.url, same_domain=self.same_domain)
-                for ln, score in self.links.score_links(item.url, links, self.intent):
-                    if score >= 0:  # negatives are excluded (login/legal/etc.)
-                        frontier.push(ln.url, score, item.depth + 1, ln.anchor)
+                scored = self.links.score_links(item.url, links, self.intent)
+                # FetchFox-style "query mode": on the seed, let the LLM propose
+                # target-location URLs that aren't linked from this page (e.g.
+                # other states), so the crawl isn't trapped wherever the seed
+                # happens to point. Feed it the highest-scored links as pattern
+                # examples so it mimics the right URL shape (the agent-roster
+                # path), not nav/footer links. These match the user's explicit
+                # location intent, so they get top priority (above the 0..1 range
+                # used for on-page links) -- visited AND extracted first.
+                if item.depth == 0 and self.client is not None:
+                    sample = [ln.url for ln, s in scored if s > 0][:15] \
+                        or [ln.url for ln in links[:15]]
+                    proposed = self.links.propose_urls(item.url, sample, self.intent)
+                    # Shuffle so no single location (the model groups them) hogs
+                    # the front of the queue under a tight page budget.
+                    random.shuffle(proposed)
+                    for gen in proposed:
+                        frontier.push(gen, PROPOSED_URL_SCORE, item.depth + 1, "(llm-proposed)")
+                    if proposed:
+                        log.info("crawl proposed %d URL(s) from seed: %s",
+                                 len(proposed), ", ".join(proposed[:6]))
+                # Hub boost (#5): if this page mainly links to record pages, its
+                # outbound links are worth more.
+                hub_boost = 0.3 if verdict.links_to_records else 0.0
+                for ln, score in scored:
+                    if score < 0:  # negatives are excluded (login/legal/etc.)
+                        continue
+                    # Yield feedback (#1): boost links whose sibling shape has paid
+                    # off, penalize shapes already visited that yielded nothing.
+                    lsh = url_shape(ln.url)
+                    if shape_records.get(lsh, 0) > 0:
+                        fb = min(0.4, 0.08 * shape_records[lsh])
+                    elif lsh in shape_seen:
+                        fb = -0.3
+                    else:
+                        fb = 0.0
+                    final = score + hub_boost + fb
+                    if final >= 0:
+                        frontier.push(ln.url, final, item.depth + 1, ln.anchor)
+                # Pattern re-proposal (#4): once a non-seed page confirms a
+                # productive URL shape but some target locations still have no data
+                # page, re-propose URLs for that shape covering the missing ones.
+                if (not reproposed and is_data and item.depth > 0
+                        and self.client is not None and self.intent.states):
+                    found_urls = [p.url for p in result.data_pages]
+                    missing = [loc for loc in self.intent.states
+                               if not location_covered(loc, found_urls)]
+                    if missing:
+                        reproposed = True
+                        narrowed = self.intent.model_copy(update={"states": missing})
+                        extra = self.links.propose_urls(item.url, found_urls, narrowed)
+                        for gen in extra:
+                            frontier.push(gen, PROPOSED_URL_SCORE, 1, "(llm-reproposed)")
+                        if extra:
+                            log.info("crawl re-proposed %d URL(s) for uncovered %s: %s",
+                                     len(extra), missing, ", ".join(extra[:6]))
 
         result.stats = {
             "seed": seed_url,
@@ -150,6 +220,35 @@ class DiscoveryCrawler:
 def item_score(item) -> float:
     """Frontier items carry their priority as a negated score."""
     return -getattr(item, "neg_score", -0.5)
+
+
+def url_shape(url: str) -> str:
+    """A coarse 'sibling' key: domain + parent path (drops the last segment).
+
+    Groups URLs that live under the same directory (e.g. every city page under
+    ``.../agent-reviews/``) so the record-yield observed on one page can boost or
+    penalize its not-yet-visited siblings (the yield-feedback loop, #1).
+    """
+    p = urlparse(url)
+    segs = [s for s in p.path.split("/") if s]
+    return f"{p.netloc.lower()}/{'/'.join(segs[:-1])}"
+
+
+def location_covered(loc: str, urls: list[str]) -> bool:
+    """Heuristic: is a target location already represented among these URLs?
+
+    Matches a location token as a whole path segment or a ``city-<loc>`` /
+    ``<loc>-...`` slug, so short codes (``in``) don't match unrelated paths
+    (``/index``). Used to decide which locations still need URLs proposed (#4).
+    """
+    t = loc.strip().lower()
+    if not t:
+        return True
+    for u in urls:
+        for seg in urlparse(u).path.lower().split("/"):
+            if seg == t or seg.endswith("-" + t) or seg.startswith(t + "-"):
+                return True
+    return False
 
 
 def diagnose(result: CrawlResult) -> str:

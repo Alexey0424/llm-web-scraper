@@ -120,8 +120,11 @@ def crawl(
     run_id = ff.start_run(url, prompt, columns, now_iso())
     dk = dedup_key(columns)
     kept = 0
-    # maxExtracts: only extract from the top-scoring discovered pages.
-    pages_to_extract = result.data_page_urls[:max_extracts]
+    # maxExtracts: extract from the most COMPLETE pages first (#2) -- those where
+    # the classifier saw the most requested fields -- ties broken by crawl score.
+    ranked = sorted(result.data_pages,
+                    key=lambda p: (len(p.fields_found), p.score), reverse=True)
+    pages_to_extract = [p.url for p in ranked][:max_extracts]
     if result.data_page_urls:
         if len(result.data_page_urls) > len(pages_to_extract):
             log.info("maxExtracts=%d: extracting %d of %d discovered pages",
@@ -146,6 +149,15 @@ def crawl(
     else:
         log.info("no data pages discovered; recording crawl with 0 records")
 
+    # Field coverage (#2): which requested fields were ever seen on a data page,
+    # and which were never found anywhere -- so the user learns up front that a
+    # source simply doesn't publish (e.g.) email/phone, instead of guessing.
+    seen_fields = set()
+    for p in result.data_pages:
+        seen_fields.update(f.strip().lower() for f in p.fields_found)
+    requested_headers = [h for h, k in columns if k != "source_url"]
+    missing_fields = [h for h in requested_headers if h.lower() not in seen_fields]
+
     ex_stats = {"records": kept, "data_pages": len(result.data_pages),
                 "extracted_pages": len(pages_to_extract),
                 "pages_fetched": result.stats.get("pages_fetched", 0),
@@ -155,7 +167,13 @@ def crawl(
                 "llm_calls": client.calls,
                 # Why a crawl found nothing, + the per-URL outcomes behind it.
                 "diagnosis": diagnose(result),
+                "field_coverage": {"found": sorted(seen_fields),
+                                   "missing": missing_fields},
                 "visited": result.visited[:30]}
+    if missing_fields:
+        log.info("field coverage: %d/%d requested fields never appeared on any "
+                 "data page (likely not published by this source): %s",
+                 len(missing_fields), len(requested_headers), ", ".join(missing_fields))
     ff.finish_run(run_id, now_iso(), ex_stats)
     out["extract_stats"] = ex_stats
     out["run_id"] = run_id

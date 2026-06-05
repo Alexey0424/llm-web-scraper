@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from .frontier import Link
@@ -76,12 +76,15 @@ class LinkClassifier:
             for i, ln in enumerate(candidates)
         )
         system = (
-            "You rank candidate links by how likely each leads to a page that "
-            f"LISTS many '{intent.entity}' records with contact details. Output "
-            'ONLY JSON: {"scores": [{"i": <index>, "p": <0..1>}, ...]} where p is '
-            "the probability the link leads toward such a listing/roster (or a "
-            "pagination page of one). High p for directory/roster/agents/team "
-            "pages; low p for legal, careers, single property listings."
+            f"You rank candidate links for a crawler collecting '{intent.entity}' "
+            "records. Give HIGH p to TWO kinds of links: (1) listing/roster/"
+            "directory pages that index many records (and their pagination), and "
+            "(2) an INDIVIDUAL record's detail/profile page (e.g. a single agent's "
+            "profile), because that is where per-record fields like phone, email, "
+            "office and address usually live. Give LOW p to legal, careers, login, "
+            "blog, and property/home-for-sale listings. Output ONLY JSON: "
+            '{"scores": [{"i": <index>, "p": <0..1>}, ...]} where p is the '
+            "probability the link leads toward target records."
         )
         user = f"Current page: {page_url}\nTarget: {intent.description}\n\nLINKS:\n{listing}"
         data = self.client.chat_json(system, user, default=None)
@@ -97,6 +100,63 @@ class LinkClassifier:
                     out[candidates[idx].url] = max(0.0, min(1.0, p)) * 0.6
         return out
 
+    def propose_urls(self, page_url: str, sample_urls: list[str],
+                     intent: CrawlIntent, max_per_location: int = 3) -> list[str]:
+        """FetchFox-style "query mode": invent same-domain URLs to visit.
+
+        Given example URLs seen on the page plus the target entity/locations, ask
+        the LLM to infer the site's URL pattern and emit OTHER same-domain URLs
+        (e.g. other cities/locations) that aren't linked here. To raise the odds
+        every target location is reached, it asks for SEVERAL major localities per
+        location. Same-domain-filtered and bounded; whatever is enqueued still
+        passes the normal compliance gate and page classifier, so wrong guesses
+        (404s, off-target) are dropped.
+        """
+        if self.client is None:
+            return []
+        domain = urlparse(page_url).netloc.lower()
+        samples = "\n".join(f"- {u}" for u in sample_urls[:20])
+        locations = ", ".join(intent.states) if intent.states else "(any location)"
+        n = max_per_location
+        system = (
+            f"You help a crawler find pages of '{intent.entity}' records on the "
+            f"site '{domain}'. From the EXAMPLE URLs, infer the site's URL "
+            "pattern, then output OTHER same-domain URLs (NOT already in the "
+            "examples) that most likely list or detail the target records for the "
+            "requested locations.\n"
+            f"IMPORTANT: produce {n} URLs for EVERY requested location, one for "
+            f"each of that location's {n} largest cities, so at least one exists. "
+            "Do not stop at one city per location.\n"
+            "Example: if the pattern is '.../reviews/<city>-<st>' and locations "
+            "are [CA, TX], output: .../reviews/los-angeles-ca, "
+            ".../reviews/san-diego-ca, .../reviews/san-jose-ca, "
+            ".../reviews/houston-tx, .../reviews/dallas-tx, .../reviews/austin-tx.\n"
+            'Output ONLY JSON: {"urls": ["https://...", ...]}. Every URL must be '
+            f"on the exact domain '{domain}'. No prose."
+        )
+        user = (
+            f"Target entity: {intent.entity}\n"
+            f"Target locations: {locations}\n"
+            f"Full request: {intent.description}\n\n"
+            f"EXAMPLE URLs on the page:\n{samples}"
+        )
+        # Slightly higher temperature: this is a "brainstorm several candidate
+        # localities" call, not a deterministic judgement -- greedy decoding tends
+        # to emit only the single most-likely city per location.
+        data = self.client.chat_json(system, user, temperature=0.5, default=None)
+        out: list[str] = []
+        seen = {u.rstrip("/") for u in sample_urls}
+        if isinstance(data, dict) and isinstance(data.get("urls"), list):
+            for u in data["urls"]:
+                u = str(u).strip()
+                if (u.startswith(("http://", "https://"))
+                        and urlparse(u).netloc.lower() == domain
+                        and u.rstrip("/") not in seen):
+                    seen.add(u.rstrip("/"))
+                    out.append(u)
+        cap = n * max(1, len(intent.states or [1]))
+        return out[:cap]
+
 
 # ---------------------------------------------------------------------------
 # Page classification (is THIS page a data/roster page worth extracting?)
@@ -106,6 +166,10 @@ class PageVerdict:
     is_data_page: bool
     estimated_records: int
     reason: str
+    # Which of the requested fields actually appear on the page (#2 completeness).
+    fields_found: list[str] = field(default_factory=list)
+    # True if the page is mainly a hub/index that links to record pages (#5).
+    links_to_records: bool = False
 
 
 def _visible_text(html: str, limit: int = 6000) -> tuple[str, int, int]:
@@ -130,12 +194,22 @@ class PageClassifier:
                 reason=f"heuristic: {mailtos} mailto + {tels} tel links",
             )
 
+        fields = ", ".join(intent.fields) if intent.fields else "the requested fields"
         system = (
-            f"Decide whether the page text below is a LISTING/ROSTER of multiple "
-            f"'{intent.entity}' records (names + contact info), not a single "
-            "profile, a blog post, or a search box. Output ONLY JSON: "
-            '{"is_listing": true|false, "count": <approx number of records>, '
-            '"reason": "<short>"}'
+            f"You analyze a web page for a crawler collecting '{intent.entity}' "
+            "records. Return ONLY JSON with these keys:\n"
+            '  "is_listing": true if the page is EITHER a listing/roster of '
+            f"multiple '{intent.entity}' records OR an individual record's detail/"
+            "profile page with its own fields; false for blog/search/legal/"
+            "marketing/pure-navigation pages.\n"
+            '  "count": approximate number of records on the page (1 for a single '
+            "profile).\n"
+            '  "links_to_records": true if the page is mainly a hub/index that '
+            "LINKS to many record pages rather than containing the records itself.\n"
+            '  "fields_present": array naming which of these requested fields '
+            f"actually appear in the page text: [{fields}]. Use the exact field "
+            "names; [] if none.\n"
+            '  "reason": short explanation.'
         )
         user = (
             f"URL: {url}\nTarget: {intent.description}\n"
@@ -148,10 +222,15 @@ class PageClassifier:
                 count = int(data.get("count") or contact_signal)
             except (ValueError, TypeError):
                 count = contact_signal
+            fp = data.get("fields_present")
+            fields_found = ([str(x).strip() for x in fp if str(x).strip()]
+                            if isinstance(fp, list) else [])
             return PageVerdict(
                 is_data_page=is_list or heuristic_hit,
                 estimated_records=max(count, contact_signal),
                 reason=str(data.get("reason", "")).strip()[:160] or "llm",
+                fields_found=fields_found,
+                links_to_records=bool(data.get("links_to_records")),
             )
         return PageVerdict(heuristic_hit, contact_signal,
                            f"heuristic fallback: {contact_signal} contact links")
