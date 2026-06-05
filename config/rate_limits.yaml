@@ -1,0 +1,13 @@
+# Polite, per-domain rate limiting. Conservative by design.
+defaults:
+  min_delay_seconds: 4.0 # minimum wait between requests to the same domain
+  max_concurrency_per_domain: 1
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+  request_timeout_seconds: 30
+  max_retries: 3
+  backoff_base_seconds: 2.0
+
+# Optional per-domain overrides (slower for sensitive hosts).
+overrides:
+  # example.com:
+  #   min_delay_seconds: 5.0

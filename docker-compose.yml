@@ -1,0 +1,77 @@
+services:
+  # Local LLM server for the Phase-1 discovery crawler (FetchFox-style).
+  # GPU-accelerated; models persist in the named volume so the 9.6 GB gemma4:e4b
+  # pull happens once. Swap models with the OLLAMA_MODEL var (see .env).
+  ollama:
+    image: ollama/ollama:latest
+    # Host port 11435 to avoid colliding with any pre-existing shared ollama on
+    # 11434. Sibling containers still reach it as http://ollama:11434 on the
+    # compose network; this mapping is only for host-side debugging.
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  scraper:
+    build: .
+    image: real-estate-agent-scraper:latest
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+    depends_on:
+      - ollama
+    volumes:
+      # Source mounted so the container runs current code without a rebuild.
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+      - ./data:/app/data
+      - ./runs:/app/runs
+      - ./config:/app/config
+      - ./docs:/app/docs
+      # NOTE: the template xlsx is NOT mounted — it isn't in the repo, and a
+      # bind-mount of a missing path makes Docker create an empty directory that
+      # breaks template loading. Drop the real file in the project root and it is
+      # baked into the image via `COPY . .`, or re-add a mount once it exists.
+    # Override the command at runtime, e.g.:
+    #   docker compose run --rm scraper inspect-template
+    #   docker compose run --rm scraper run --states NJ PA IN --quality-first --export
+    command: ["--help"]
+
+  # Web UI: one-click scraping + results + Excel export.
+  #   docker compose up ui   ->   open http://localhost:5000
+  ui:
+    build: .
+    image: real-estate-agent-scraper:latest
+    entrypoint: ["python", "-m", "src.web.app"]
+    command: []
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+    depends_on:
+      - ollama
+    volumes:
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+      - ./data:/app/data
+      - ./runs:/app/runs
+      - ./config:/app/config
+      - ./docs:/app/docs
+
+volumes:
+  ollama_models:
