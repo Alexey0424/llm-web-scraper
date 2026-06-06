@@ -247,8 +247,10 @@ Run: `docker compose exec -T ui python -m src.main crawl --url "https://www.zill
 
 | Branch | Approach | NJ rows | Email filled | Phone1 filled | Pages | Notes |
 |---|---|---|---|---|---|---|
-| (baseline 8263346) | listing extract, no JSON-LD | | | | | |
-| detail-link-discovery | +JSON-LD +pattern harvest | | | | | |
+| baseline 8263346 | listing roster extract, no JSON-LD | 5 | 0/5 | ~1/5 | 1 | extracted the hub roster; no contact fields |
+| detail-link-discovery (iter 1) | pattern harvest, extract listing | 5 | 0/5 | 1/5 | 1 | bug: hub extracted before drilling profiles |
+| detail-link-discovery (iter 2) | hub→harvest, extract profiles | 5 | 1/5 | 5/5 | 4 | phone via JSON-LD; email missed by LLM; dup rows |
+| **detail-link-discovery (final)** | **+mailto email +merge-to-one** | **5** | **5/5** | **5/5** | **6** | **✅ success — 1 clean record/profile** |
 
 ## Caveats (from research)
 - LLM-authored/induced patterns are brittle to DOM/URL changes — re-induce per run, don't hardcode.
