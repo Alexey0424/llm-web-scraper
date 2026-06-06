@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 
 _LD = re.compile(
     r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
@@ -47,4 +48,27 @@ def extract_jsonld_fields(html: str) -> dict:
         except (json.JSONDecodeError, ValueError):
             continue
         _walk(data, out)
+    return out
+
+
+_MAILTO = re.compile(r'mailto:([^"\'?\s<>]+)', re.IGNORECASE)
+_TEL = re.compile(r'href=["\']tel:([+0-9().\-\s]{7,})["\']', re.IGNORECASE)
+
+
+def extract_contact_fields(html: str) -> dict:
+    """JSON-LD fields, augmented with ``mailto:`` / ``tel:`` scraped from raw HTML.
+
+    JSON-LD frequently carries ``telephone`` but not ``email`` (the email is in a
+    ``mailto:`` link), so this fallback fills the gaps that the LLM text pass
+    often misses on detail pages.
+    """
+    out = extract_jsonld_fields(html)
+    if "email" not in out:
+        m = _MAILTO.search(html or "")
+        if m:
+            out["email"] = urllib.parse.unquote(m.group(1).split("?")[0]).strip()
+    if "telephone" not in out:
+        m = _TEL.search(html or "")
+        if m:
+            out["telephone"] = m.group(1).strip()
     return out

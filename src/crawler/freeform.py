@@ -13,7 +13,7 @@ import re
 
 from ..extractors.llm_extractor import _chunks, html_to_signal_text
 from ..normalizers.phone_email_normalizer import normalize_phone
-from .jsonld import extract_jsonld_fields
+from .jsonld import extract_contact_fields
 from .llm import OllamaClient
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class FreeFormExtractor:
         # Structured fields from schema.org JSON-LD (name/telephone/email/address).
         # Reliable on detail pages and present even when the visible page hides
         # contact info -- this is how email/phone get filled.
-        ld = extract_jsonld_fields(content)
+        ld = extract_contact_fields(content)
         if not self.client.available():
             log.warning("FreeFormExtractor: Ollama unavailable; JSON-LD only.")
             row = self._fill_from_jsonld({k: None for k in keys}, ld)
@@ -97,13 +97,20 @@ class FreeFormExtractor:
                     continue
                 seen.add(sig)
                 out.append(row)
-        # Fill blanks from JSON-LD (never overwrites an LLM value). On a single
-        # detail page the LLM may return nothing -- if JSON-LD has the record,
-        # emit it so the contact fields aren't lost.
-        if ld:
+        # A page carrying a single schema.org entity (name) is one record's detail
+        # page: merge the LLM's possibly-duplicated/partial rows + structured
+        # contact into ONE record, so we don't emit "Maria J DePasquale" AND
+        # "Maria DePasquale" and so email/phone are filled from JSON-LD/mailto.
+        if ld.get("name"):
+            merged = {k: None for k in keys}
+            for r in out:
+                for k in keys:
+                    if not merged.get(k) and r.get(k):
+                        merged[k] = r[k]
+            merged = self._fill_from_jsonld(merged, ld)
+            out = [merged] if any(merged.values()) else []
+        elif ld:
             out = [self._fill_from_jsonld(r, ld) for r in out]
-            if not out and any(ld.get(x) for x in ("name", "telephone", "email")):
-                out = [self._fill_from_jsonld({k: None for k in keys}, ld)]
         log.info("FreeFormExtractor: %d records from %s", len(out), base_url)
         return out
 

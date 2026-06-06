@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.crawler.jsonld import extract_jsonld_fields
+from src.crawler.jsonld import extract_contact_fields, extract_jsonld_fields
 
 
 def test_profile_jsonld_has_contact():
@@ -25,3 +25,20 @@ def test_handles_graph_and_arrays():
 def test_malformed_block_skipped():
     assert extract_jsonld_fields('<script type="application/ld+json">{bad json</script>') == {}
     assert extract_jsonld_fields("<html>no ld</html>") == {}
+
+
+def test_contact_fields_mailto_fallback():
+    # JSON-LD has telephone but no email; mailto link supplies the email.
+    html = '''<script type="application/ld+json">
+    {"@type":"LocalBusiness","name":"Dana","telephone":"(609) 555-0143"}</script>
+    <a href="mailto:dana.moreno@compass.com?subject=hi">Email</a>'''
+    c = extract_contact_fields(html)
+    assert c["telephone"] == "(609) 555-0143"
+    assert c["email"] == "dana.moreno@compass.com"
+
+
+def test_real_profile_fixture_has_email_and_phone():
+    from pathlib import Path
+    html = Path("tests/fixtures/zillow_profile.html").read_text(encoding="utf-8")
+    c = extract_contact_fields(html)
+    assert c.get("telephone") and c.get("email")
