@@ -152,12 +152,32 @@ class DiscoveryCrawler:
             fetched += 1
 
             verdict = self.pages.classify(item.url, res.content, self.intent)
-            note = verdict.reason
             is_data = verdict.is_data_page
-            # Record yield for this page's URL shape (feeds the feedback loop, #1).
+
+            # Extract links + detect the record URL pattern EARLY -- needed to tell
+            # a HUB (a listing that links to detail pages) from a DETAIL page (the
+            # record itself).
+            links = (extract_links(res.content, item.url, same_domain=self.same_domain)
+                     if item.depth < self.max_depth else [])
+            scored = self.links.score_links(item.url, links, self.intent) if links else []
+            if links and self._detail_prefix is None:
+                self._detail_prefix = self.links.detect_detail_pattern(links, self.intent)
+                if self._detail_prefix:
+                    log.info("crawl detail-pattern detected: %s", self._detail_prefix)
+            is_detail_page = bool(self._detail_prefix
+                                  and matches_pattern(item.url, self._detail_prefix))
+            has_detail_links = bool(self._detail_prefix
+                                    and any(matches_pattern(ln.url, self._detail_prefix) for ln in links))
+            # A hub links TO records but isn't one -> harvest its detail links,
+            # don't extract it (its inline roster lacks the per-record contact
+            # fields that live on the detail pages). Extract a page only when it's
+            # a detail page, or a data page with no detail links to drill into.
+            should_extract = is_data and (is_detail_page or not has_detail_links)
+
             sh = url_shape(item.url)
             shape_seen[sh] = shape_seen.get(sh, 0) + 1
-            if is_data:
+            note = verdict.reason
+            if should_extract:
                 shape_records[sh] = shape_records.get(sh, 0) + max(verdict.estimated_records, 1)
                 result.data_pages.append(DiscoveredPage(
                     url=item.url, score=max(item_score(item), 0.5), depth=item.depth,
@@ -165,15 +185,17 @@ class DiscoveryCrawler:
                     fields_found=list(verdict.fields_found),
                 ))
                 note = f"DATA PAGE (~{verdict.estimated_records}): {verdict.reason}"
+            elif has_detail_links:
+                note = f"HUB -> {self._detail_prefix}: {verdict.reason}"
             result.visited.append({"url": item.url, "status": "ok", "note": note})
             log.info("crawl ok      d%d %s -> %s", item.depth, item.url, note[:90])
             self._emit(kind="visit", seconds=secs, url=item.url,
-                       status="data_page" if is_data else "ok", note=note[:120],
+                       status="data_page" if should_extract else "ok", note=note[:120],
                        fetched=fetched, data_pages=len(result.data_pages))
 
-            # Record-target mode: extract this data page inline (reusing the HTML)
+            # Record-target mode: extract this DETAIL page inline (reusing the HTML)
             # and stop the crawl if the callback says the target has been met.
-            if is_data and self.on_data_page is not None:
+            if should_extract and self.on_data_page is not None:
                 try:
                     keep_going = self.on_data_page(item.url, res.content, verdict)
                 except Exception as exc:  # noqa: BLE001 - extraction must not crash the crawl
@@ -184,14 +206,6 @@ class DiscoveryCrawler:
                     break
 
             if item.depth < self.max_depth:
-                links = extract_links(res.content, item.url, same_domain=self.same_domain)
-                scored = self.links.score_links(item.url, links, self.intent)
-                # Detect the individual-record URL pattern ONCE (anchor-free), then
-                # reuse it to harvest every detail link below.
-                if self._detail_prefix is None:
-                    self._detail_prefix = self.links.detect_detail_pattern(links, self.intent)
-                    if self._detail_prefix:
-                        log.info("crawl detail-pattern detected: %s", self._detail_prefix)
                 # FetchFox-style "query mode": on the seed, let the LLM propose
                 # target-location URLs that aren't linked from this page (e.g.
                 # other states), so the crawl isn't trapped wherever the seed
