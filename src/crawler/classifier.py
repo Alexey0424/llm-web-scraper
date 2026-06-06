@@ -161,6 +161,44 @@ class LinkClassifier:
         cap = n * max(1, len(segments))
         return out[:cap]
 
+    def detect_detail_pattern(self, links: list[Link], intent: CrawlIntent) -> str | None:
+        """Find the URL path-prefix of the INDIVIDUAL record pages on a listing.
+
+        Anchor-text-free (the research-backed fix): cluster the page's links by
+        URL shape, then -- if several clusters exist -- make ONE small LLM call to
+        pick which cluster is the individual ``intent.entity`` detail page (vs
+        category/location/nav). Returns a prefix like ``/profile`` (or None). The
+        caller harvests every link under that prefix regardless of its anchor.
+        """
+        from .urlpattern import induce_clusters
+
+        clusters = induce_clusters([ln.url for ln in links], min_size=3)
+        if not clusters:
+            return None
+        if len(clusters) == 1 or self.client is None:
+            return clusters[0]["prefix"]
+        listing = "\n".join(
+            f'{i}. {c["prefix"]}  (e.g. {", ".join(c["samples"][:3])})'
+            for i, c in enumerate(clusters[:10])
+        )
+        system = (
+            f"A crawler is collecting INDIVIDUAL '{intent.entity}' records. Below "
+            "are URL path-prefix clusters found on a listing page. Pick the ONE "
+            f"cluster whose URLs are an individual {intent.entity}'s own detail/"
+            "profile page (NOT category, location, search, or navigation pages). "
+            'Output ONLY JSON: {"index": <cluster number>}.'
+        )
+        user = f"Target: {intent.description}\n\nCLUSTERS:\n{listing}"
+        data = self.client.chat_json(system, user, default=None)
+        if isinstance(data, dict):
+            try:
+                idx = int(data.get("index"))
+                if 0 <= idx < len(clusters):
+                    return clusters[idx]["prefix"]
+            except (TypeError, ValueError):
+                pass
+        return clusters[0]["prefix"]
+
 
 # ---------------------------------------------------------------------------
 # Page classification (is THIS page a data/roster page worth extracting?)
@@ -186,10 +224,17 @@ class PageClassifier:
         self.client = client
 
     def classify(self, url: str, html: str, intent: CrawlIntent) -> PageVerdict:
+        from .jsonld import extract_jsonld_fields
+
         text, mailtos, tels = _visible_text(html)
         # Heuristic: several contact links strongly suggest a roster page.
         contact_signal = mailtos + tels
         heuristic_hit = contact_signal >= 3
+        # An individual detail page often carries a single schema.org record with
+        # the contact fields -- treat that as a data page worth extracting.
+        ld = extract_jsonld_fields(html)
+        ld_record = bool(ld.get("name") and (ld.get("telephone") or ld.get("email")))
+        heuristic_hit = heuristic_hit or ld_record
 
         if self.client is None:
             return PageVerdict(

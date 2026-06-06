@@ -28,6 +28,7 @@ from .classifier import LinkClassifier, PageClassifier
 from .frontier import Frontier, extract_links
 from .intent import CrawlIntent
 from .llm import OllamaClient
+from .urlpattern import matches_pattern
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ log = logging.getLogger(__name__)
 # range that on-page link scores occupy, so the user's explicit location intent
 # is crawled (and extracted) before whatever the seed page happens to link to.
 PROPOSED_URL_SCORE = 1.5
+
+# Priority for links matching the detected individual-record URL pattern (e.g.
+# /profile/<name>). Set highest so detail pages are crawled and extracted before
+# anything else -- they are what the user ultimately wants, and they're found by
+# URL shape, not anchor keywords (a name anchor would otherwise score ~0).
+DETAIL_LINK_SCORE = 1.7
 
 
 @dataclass
@@ -93,6 +100,9 @@ class DiscoveryCrawler:
         self.needed_segments = needed_segments
         self.links = LinkClassifier(client)
         self.pages = PageClassifier(client)
+        # The detected individual-record URL prefix (e.g. "/profile"), learned
+        # once from the first listing page and then used to harvest detail links.
+        self._detail_prefix = None
 
     def _emit(self, **event) -> None:
         if self.on_event:
@@ -176,6 +186,12 @@ class DiscoveryCrawler:
             if item.depth < self.max_depth:
                 links = extract_links(res.content, item.url, same_domain=self.same_domain)
                 scored = self.links.score_links(item.url, links, self.intent)
+                # Detect the individual-record URL pattern ONCE (anchor-free), then
+                # reuse it to harvest every detail link below.
+                if self._detail_prefix is None:
+                    self._detail_prefix = self.links.detect_detail_pattern(links, self.intent)
+                    if self._detail_prefix:
+                        log.info("crawl detail-pattern detected: %s", self._detail_prefix)
                 # FetchFox-style "query mode": on the seed, let the LLM propose
                 # target-location URLs that aren't linked from this page (e.g.
                 # other states), so the crawl isn't trapped wherever the seed
@@ -200,6 +216,12 @@ class DiscoveryCrawler:
                 # outbound links are worth more.
                 hub_boost = 0.3 if verdict.links_to_records else 0.0
                 for ln, score in scored:
+                    # Detail links (matching the detected record pattern) are the
+                    # goal -- push them at top priority regardless of anchor text
+                    # or keyword score (their anchor is just a name).
+                    if self._detail_prefix and matches_pattern(ln.url, self._detail_prefix):
+                        frontier.push(ln.url, DETAIL_LINK_SCORE, item.depth + 1, ln.anchor)
+                        continue
                     if score < 0:  # negatives are excluded (login/legal/etc.)
                         continue
                     # Yield feedback (#1): boost links whose sibling shape has paid
