@@ -13,6 +13,7 @@ import re
 
 from ..extractors.llm_extractor import _chunks, html_to_signal_text
 from ..normalizers.phone_email_normalizer import normalize_phone
+from .jsonld import extract_contact_fields
 from .llm import OllamaClient
 
 log = logging.getLogger(__name__)
@@ -56,11 +57,16 @@ class FreeFormExtractor:
         )
 
     def extract(self, content: str, *, base_url: str = "") -> list[dict]:
-        if not self.client.available():
-            log.warning("FreeFormExtractor: Ollama unavailable; no records.")
-            return []
-        text = html_to_signal_text(content)
         keys = [k for _, k in self.columns]
+        # Structured fields from schema.org JSON-LD (name/telephone/email/address).
+        # Reliable on detail pages and present even when the visible page hides
+        # contact info -- this is how email/phone get filled.
+        ld = extract_contact_fields(content)
+        if not self.client.available():
+            log.warning("FreeFormExtractor: Ollama unavailable; JSON-LD only.")
+            row = self._fill_from_jsonld({k: None for k in keys}, ld)
+            return [row] if any(row.values()) else []
+        text = html_to_signal_text(content)
         out: list[dict] = []
         seen: set[str] = set()
         system = self._system()
@@ -91,5 +97,46 @@ class FreeFormExtractor:
                     continue
                 seen.add(sig)
                 out.append(row)
+        # A page carrying a single schema.org entity (name) is one record's detail
+        # page: merge the LLM's possibly-duplicated/partial rows + structured
+        # contact into ONE record, so we don't emit "Maria J DePasquale" AND
+        # "Maria DePasquale" and so email/phone are filled from JSON-LD/mailto.
+        if ld.get("name"):
+            merged = {k: None for k in keys}
+            for r in out:
+                for k in keys:
+                    if not merged.get(k) and r.get(k):
+                        merged[k] = r[k]
+            merged = self._fill_from_jsonld(merged, ld)
+            out = [merged] if any(merged.values()) else []
+        elif ld:
+            out = [self._fill_from_jsonld(r, ld) for r in out]
         log.info("FreeFormExtractor: %d records from %s", len(out), base_url)
         return out
+
+    def _fill_from_jsonld(self, row: dict, ld: dict) -> dict:
+        """Fill empty record fields from JSON-LD values, by column-key semantics.
+
+        JSON-LD carries a single telephone, so it fills only the FIRST empty
+        phone column (e.g. Phone 1), never duplicating into Phone 2.
+        """
+        phone_used = False
+        for _, k in self.columns:
+            if row.get(k):
+                if any(t in k for t in ("phone", "tel", "cell", "mobile")):
+                    phone_used = True
+                continue
+            if "email" in k and ld.get("email"):
+                row[k] = ld["email"]
+            elif (not phone_used
+                  and any(t in k for t in ("phone", "tel", "cell", "mobile"))
+                  and ld.get("telephone")):
+                row[k] = normalize_phone(ld["telephone"]) or ld["telephone"]
+                phone_used = True
+            elif "name" in k and "first" not in k and "last" not in k and ld.get("name"):
+                row[k] = ld["name"]
+            elif k == "city" and ld.get("city"):
+                row[k] = ld["city"]
+            elif k == "state" and ld.get("state"):
+                row[k] = ld["state"]
+        return row
