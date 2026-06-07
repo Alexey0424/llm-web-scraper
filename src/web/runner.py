@@ -6,7 +6,8 @@ from __future__ import annotations
 def run_crawl(ff_store, url: str, prompt: str, states: list[str],
               max_pages: int = 25, max_depth: int = 3, on_event=None,
               model: str | None = None, max_extracts: int = 10,
-              target_records: int | None = None) -> dict:
+              target_records: int | None = None,
+              batch_id: str | None = None) -> dict:
     """Free-form discovery + extraction (FetchFox-style) for the UI.
 
     Writes results into a per-run free-form store (dynamic columns from the

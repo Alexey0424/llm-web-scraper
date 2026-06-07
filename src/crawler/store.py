@@ -38,14 +38,20 @@ class FreeFormStore:
             CREATE INDEX IF NOT EXISTS ix_ff_records_run ON ff_records(run_id);
             """
         )
+        # Migration: link runs that belong to the same bulk/queue batch. Older
+        # databases predate this column, so add it if missing.
+        cols = {c[1] for c in self.conn.execute("PRAGMA table_info(ff_runs)").fetchall()}
+        if "batch_id" not in cols:
+            self.conn.execute("ALTER TABLE ff_runs ADD COLUMN batch_id TEXT")
         self.conn.commit()
 
     # -- runs ---------------------------------------------------------------
     def start_run(self, seed: str, prompt: str, columns: list[tuple[str, str]],
-                  started: str) -> int:
+                  started: str, batch_id: str | None = None) -> int:
         cur = self.conn.execute(
-            "INSERT INTO ff_runs (seed, prompt, columns_json, started) VALUES (?,?,?,?)",
-            (seed, prompt, json.dumps(columns), started),
+            "INSERT INTO ff_runs (seed, prompt, columns_json, started, batch_id) "
+            "VALUES (?,?,?,?,?)",
+            (seed, prompt, json.dumps(columns), started, batch_id),
         )
         self.conn.commit()
         return int(cur.lastrowid)
@@ -110,6 +116,19 @@ class FreeFormStore:
         return int(self.conn.execute(
             "SELECT COUNT(*) c FROM ff_records WHERE run_id=?", (run_id,)
         ).fetchone()["c"])
+
+    def runs_for_batch(self, batch_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM ff_runs WHERE batch_id=? ORDER BY id", (batch_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- deletes ------------------------------------------------------------
+    def delete_run(self, run_id: int) -> None:
+        """Remove a single run and all of its records."""
+        self.conn.execute("DELETE FROM ff_records WHERE run_id=?", (run_id,))
+        self.conn.execute("DELETE FROM ff_runs WHERE id=?", (run_id,))
+        self.conn.commit()
 
     def reset(self) -> None:
         self.conn.executescript("DELETE FROM ff_records; DELETE FROM ff_runs;")

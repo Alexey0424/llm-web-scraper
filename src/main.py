@@ -39,6 +39,7 @@ def crawl(
     on_event=None,
     model: str | None = None,
     target_records: int | None = None,
+    batch_id: str | None = None,
 ) -> dict:
     """Free-form discovery + extraction (FetchFox-style).
 
@@ -119,7 +120,7 @@ def crawl(
     # pages) when extract=True, so every crawl appears in history.
     own_store = (store is None) if extract else False
     ff = (store or FreeFormStore(config.DATA_DIR / "processed" / "freeform.sqlite")) if extract else None
-    run_id = ff.start_run(url, prompt, columns, now_iso()) if ff else None
+    run_id = ff.start_run(url, prompt, columns, now_iso(), batch_id=batch_id) if ff else None
     dk = dedup_key(columns) if ff else None
     extractor = FreeFormExtractor(columns, entity=intent.entity, client=client) if ff else None
     kept = 0
@@ -148,7 +149,7 @@ def crawl(
         extracted_urls.append(page_url)
         if on_event:
             on_event({"kind": "extract", "url": page_url, "status": "extracted",
-                      "fetched": 0, "data_pages": dp_count,
+                      "fetched": 0, "data_pages": dp_count, "records": kept,
                       "note": f"+{added} record(s) ({kept} total)"})
         return added
 

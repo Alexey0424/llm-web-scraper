@@ -13,16 +13,20 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import traceback
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, jsonify, render_template, request, send_from_directory, url_for
 
 from .. import config
-from ..crawler.store import FreeFormStore
+from ..crawler.store import FreeFormStore, now_iso
+from . import batch as batch_plan
 from . import runner
 
 UI_FF_DB = config.DATA_DIR / "processed" / "ui_freeform.sqlite"
+EXPORTS_DIR = config.DATA_DIR / "exports"
+EXPORT_EXTS = (".xlsx", ".csv", ".jsonl")
 
 
 def _ff_store() -> FreeFormStore:
@@ -39,7 +43,16 @@ _crawl: dict = {
     "state": "idle", "msg": "", "error": None, "url": "", "prompt": "",
     "events": [], "fetched": 0, "data_pages": 0, "plan": None, "llm_calls": 0,
     "trace": None, "where": None,
+    # Progress/ETA: records collected so far, the optional record target, and the
+    # wall-clock start (epoch seconds) so the UI can show % done + a regression ETA.
+    "records": 0, "target": None, "started_at": None,
+    # Batch (bulk/queue) progress; None for an individual crawl.
+    "batch": None,
 }
+
+
+def _now() -> float:
+    return time.time()
 
 
 def _error_detail(exc: Exception) -> tuple[str, dict | None]:
@@ -91,6 +104,8 @@ def _run_crawl_job(url: str, prompt: str, states: list[str], max_pages: int,
                 _crawl["fetched"] = ev["fetched"]
             if "data_pages" in ev:
                 _crawl["data_pages"] = ev["data_pages"]
+            if "records" in ev:
+                _crawl["records"] = ev["records"]
             _crawl["events"].append({"kind": kind, "seconds": ev.get("seconds"),
                                      "url": ev.get("url", ""),
                                      "status": ev.get("status", ""),
@@ -116,11 +131,145 @@ def _run_crawl_job(url: str, prompt: str, states: list[str], max_pages: int,
         store.close()
 
 
+def _combine_columns(runs: list[dict]) -> list[list]:
+    """Union of the runs' columns, preserving first-seen order (for stacked mode).
+
+    Same-prompt runs almost always share columns, but the planner can vary, so a
+    union avoids silently dropping a field one URL happened to surface.
+    """
+    out: list[list] = []
+    seen: set[str] = set()
+    for r in runs:
+        for header, key in json.loads(r.get("columns_json") or "[]"):
+            if key not in seen:
+                seen.add(key)
+                out.append([header, key])
+    return out
+
+
+def _build_batch_export(store: FreeFormStore, batch_id: str, combine: str) -> str | None:
+    """Build the combined Excel for a batch and return its path (None if empty)."""
+    from ..exporters import dynamic_exporter
+
+    runs = store.runs_for_batch(batch_id)
+    runs = [r for r in runs if store.count_for_run(r["id"]) > 0]
+    if not runs:
+        return None
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    if combine == "sheets":
+        sheets = [
+            (r.get("seed") or f"run{r['id']}",
+             json.loads(r.get("columns_json") or "[]"),
+             store.records_for_run(r["id"]))
+            for r in runs
+        ]
+        path = EXPORTS_DIR / f"batch_queue_{ts}.xlsx"
+        return dynamic_exporter.write_xlsx_multisheet(sheets, path)
+    # default: stacked single sheet (bulk shared-prompt)
+    columns = _combine_columns(runs)
+    sections = [(r.get("seed") or f"run{r['id']}", store.records_for_run(r["id"])) for r in runs]
+    path = EXPORTS_DIR / f"batch_bulk_{ts}.xlsx"
+    return dynamic_exporter.write_xlsx_stacked(columns, sections, path)
+
+
+def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages: int,
+                   max_depth: int, model: str | None, max_extracts: int,
+                   target_records: int | None) -> None:
+    """Run a batch of crawls serially on one background thread."""
+    store = _ff_store()
+    batch_id = f"batch-{int(_now() * 1000)}"
+    total = len(jobs)
+
+    with _crawl_lock:
+        _crawl["batch"] = {
+            "id": batch_id, "combine": combine, "total": total, "index": 0,
+            "jobs": [{"url": j["url"], "prompt": j["prompt"], "state": "pending",
+                      "records": 0, "started_at": None, "finished_at": None}
+                     for j in jobs],
+            "export": None,
+        }
+
+    def make_on_event(idx: int):
+        def on_event(ev: dict) -> None:
+            kind = ev.get("kind", "")
+            with _crawl_lock:
+                if kind == "plan":
+                    _crawl["plan"] = ev
+                    return
+                if kind == "runCompletion":
+                    _crawl["llm_calls"] += 1
+                if "fetched" in ev:
+                    _crawl["fetched"] = ev["fetched"]
+                if "data_pages" in ev:
+                    _crawl["data_pages"] = ev["data_pages"]
+                if "records" in ev and _crawl["batch"]:
+                    _crawl["batch"]["jobs"][idx]["records"] = ev["records"]
+                    _crawl["records"] = ev["records"]
+                _crawl["events"].append({"kind": kind, "seconds": ev.get("seconds"),
+                                         "url": ev.get("url", ""),
+                                         "status": ev.get("status", ""),
+                                         "note": ev.get("note", "")})
+                _crawl["events"] = _crawl["events"][-150:]
+        return on_event
+
+    try:
+        for idx, job in enumerate(jobs):
+            with _crawl_lock:
+                _crawl.update(records=0, fetched=0, data_pages=0, plan=None,
+                              url=job["url"], prompt=job["prompt"])
+                _crawl["batch"]["index"] = idx + 1
+                _crawl["batch"]["jobs"][idx].update(state="running", started_at=_now())
+            try:
+                stats = runner.run_crawl(store, job["url"], job["prompt"], states,
+                                         max_pages, max_depth, make_on_event(idx),
+                                         model, max_extracts, target_records,
+                                         batch_id=batch_id)
+                with _crawl_lock:
+                    _crawl["batch"]["jobs"][idx].update(
+                        state="done", finished_at=_now(),
+                        records=stats.get("records", 0))
+            except Exception as exc:  # noqa: BLE001 - one job failing shouldn't kill the batch
+                with _crawl_lock:
+                    _crawl["batch"]["jobs"][idx].update(
+                        state="error", finished_at=_now(), error=str(exc))
+                    _crawl["events"].append({"kind": "error", "url": job["url"],
+                                             "status": "error", "note": str(exc)[:160]})
+
+        export_path = _build_batch_export(store, batch_id, combine)
+        done = sum(1 for j in _crawl["batch"]["jobs"] if j["state"] == "done")
+        total_recs = sum(j.get("records", 0) for j in _crawl["batch"]["jobs"])
+        msg = (f"Batch complete — {done}/{total} operation(s) succeeded, "
+               f"{total_recs} record(s) total.")
+        with _crawl_lock:
+            if export_path:
+                _crawl["batch"]["export"] = Path(export_path).name
+            _crawl.update(state="done", msg=msg, error=None)
+    except Exception as exc:  # noqa: BLE001
+        full, where = _error_detail(exc)
+        with _crawl_lock:
+            _crawl.update(state="error", error=str(exc), msg="", trace=full, where=where)
+    finally:
+        store.close()
+
+
+def _safe_export_path(fname: str) -> Path | None:
+    """Resolve a user-supplied export filename, rejecting traversal."""
+    if not fname or "/" in fname or "\\" in fname or ".." in fname:
+        return None
+    p = (EXPORTS_DIR / fname).resolve()
+    try:
+        if p.parent != EXPORTS_DIR.resolve():
+            return None
+    except OSError:
+        return None
+    return p
+
+
 def _export_files() -> list[str]:
-    exp = config.DATA_DIR / "exports"
-    if not exp.exists():
+    if not EXPORTS_DIR.exists():
         return []
-    files = sorted(exp.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(EXPORTS_DIR.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [p.name for p in files]
 
 
@@ -148,6 +297,7 @@ def create_app() -> Flask:
                     "rows": ff.count_for_run(r["id"]),
                     "columns": [h for h, _ in json.loads(r.get("columns_json") or "[]")],
                     "diagnosis": rstats.get("diagnosis", ""),
+                    "batch_id": r.get("batch_id"),
                 })
             ctx = {
                 "exports": _export_files(),
@@ -211,7 +361,8 @@ def create_app() -> Flask:
                 return jsonify(ok=False, error="A discovery crawl is already running."), 409
             _crawl.update(state="running", msg="", error=None, url=url, prompt=prompt,
                           events=[], fetched=0, data_pages=0, plan=None, llm_calls=0,
-                          trace=None, where=None)
+                          trace=None, where=None, records=0, target=target_records,
+                          started_at=_now(), batch=None)
 
         threading.Thread(
             target=_run_crawl_job,
@@ -219,6 +370,60 @@ def create_app() -> Flask:
             daemon=True,
         ).start()
         return jsonify(ok=True, url=url, states=states, model=model)
+
+    @app.route("/crawl-batch", methods=["POST"])
+    def crawl_batch():
+        """Start a serial batch crawl: bulk (shared prompt) or queue (per-URL)."""
+        mode = (request.form.get("mode") or "").strip()
+        model = (request.form.get("model") or "").strip() or None
+        states = request.form.getlist("states")
+        try:
+            max_pages = max(1, min(80, int(request.form.get("max_pages", 25))))
+        except ValueError:
+            max_pages = 25
+        try:
+            max_extracts = max(1, min(80, int(request.form.get("max_extracts", 10))))
+        except ValueError:
+            max_extracts = 10
+        target_records = None
+        if request.form.get("target_enabled") in ("on", "true", "1", "yes"):
+            try:
+                target_records = max(1, min(5000, int(request.form.get("target_records", 50))))
+            except ValueError:
+                target_records = 50
+
+        # bulk: many URLs (newline-separated) + one prompt.
+        # queue: parallel url[]/prompt[] lists forming ordered (url, prompt) pairs.
+        urls = None
+        pairs = None
+        if mode == "bulk":
+            urls = (request.form.get("urls") or "").splitlines()
+        elif mode == "queue":
+            qurls = request.form.getlist("url[]")
+            qprompts = request.form.getlist("prompt[]")
+            pairs = [{"url": u, "prompt": p}
+                     for u, p in zip(qurls, qprompts)]
+        try:
+            jobs, combine = batch_plan.build_jobs(mode, urls=urls, prompt=request.form.get("prompt"),
+                                                  pairs=pairs)
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+
+        with _crawl_lock:
+            if _crawl["state"] == "running":
+                return jsonify(ok=False, error="A discovery crawl is already running."), 409
+            _crawl.update(state="running", msg="", error=None,
+                          url=jobs[0]["url"], prompt=jobs[0]["prompt"],
+                          events=[], fetched=0, data_pages=0, plan=None, llm_calls=0,
+                          trace=None, where=None, records=0, target=target_records,
+                          started_at=_now(), batch=None)
+
+        threading.Thread(
+            target=_run_batch_job,
+            args=(jobs, combine, states, max_pages, 3, model, max_extracts, target_records),
+            daemon=True,
+        ).start()
+        return jsonify(ok=True, jobs=len(jobs), combine=combine)
 
     @app.route("/crawl-status")
     def crawl_status():
@@ -234,17 +439,89 @@ def create_app() -> Flask:
                 _crawl.update(state="idle", msg="", error=None, trace=None, where=None)
         return jsonify(ok=True)
 
+    def _delete_all_exports() -> int:
+        n = 0
+        if EXPORTS_DIR.exists():
+            for p in EXPORTS_DIR.iterdir():
+                if p.is_file() and p.suffix.lower() in EXPORT_EXTS:
+                    try:
+                        p.unlink()
+                        n += 1
+                    except OSError:
+                        pass
+        return n
+
     @app.route("/reset", methods=["POST"])
     def reset():
+        """Nuke everything: crawl history + records (DB) and the export files."""
         ff = _ff_store()
         try:
             ff.reset()
         finally:
             ff.close()
+        _delete_all_exports()
         with _crawl_lock:
             _crawl.update(state="idle", msg="", error=None, events=[], plan=None,
-                          fetched=0, data_pages=0, llm_calls=0, trace=None, where=None)
-        return jsonify(ok=True, msg="All crawl data cleared.")
+                          fetched=0, data_pages=0, llm_calls=0, trace=None, where=None,
+                          records=0, target=None, started_at=None, batch=None)
+        return jsonify(ok=True, msg="All crawl data and exports cleared.")
+
+    @app.route("/clear-history", methods=["POST"])
+    def clear_history():
+        """Delete all crawl runs + records, but keep the exported files."""
+        ff = _ff_store()
+        try:
+            ff.reset()
+        finally:
+            ff.close()
+        return jsonify(ok=True, msg="Crawl history cleared.")
+
+    @app.route("/delete-run/<int:run_id>", methods=["POST"])
+    def delete_run(run_id: int):
+        ff = _ff_store()
+        try:
+            if not ff.get_run(run_id):
+                return jsonify(ok=False, error=f"Run #{run_id} not found."), 404
+            ff.delete_run(run_id)
+        finally:
+            ff.close()
+        return jsonify(ok=True, msg=f"Crawl #{run_id} deleted.")
+
+    @app.route("/clear-exports", methods=["POST"])
+    def clear_exports():
+        n = _delete_all_exports()
+        return jsonify(ok=True, msg=f"{n} export file(s) deleted.")
+
+    @app.route("/delete-export/<path:fname>", methods=["POST"])
+    def delete_export(fname: str):
+        p = _safe_export_path(fname)
+        if p is None:
+            return jsonify(ok=False, error="Invalid filename."), 400
+        if not p.exists():
+            return jsonify(ok=False, error="File not found."), 404
+        try:
+            p.unlink()
+        except OSError as exc:
+            return jsonify(ok=False, error=str(exc)), 500
+        return jsonify(ok=True, msg=f"{fname} deleted.")
+
+    @app.route("/export-batch/<batch_id>")
+    def export_batch(batch_id: str):
+        """Build (or rebuild) the combined Excel for a batch and download it."""
+        ff = _ff_store()
+        try:
+            runs = ff.runs_for_batch(batch_id)
+            if not runs:
+                return jsonify(ok=False, error="Batch not found."), 404
+            # combine strategy: all-same-prompt batches stack; otherwise sheets.
+            prompts = {r.get("prompt") for r in runs}
+            combine = "stack" if len(prompts) == 1 else "sheets"
+            path = _build_batch_export(ff, batch_id, combine)
+            if not path:
+                return jsonify(ok=False, error="This batch has no records to export."), 400
+        finally:
+            ff.close()
+        return send_from_directory(EXPORTS_DIR, Path(path).name, as_attachment=True)
 
     @app.route("/export-run/<int:run_id>")
     def export_run(run_id: int):
