@@ -40,6 +40,7 @@ def crawl(
     model: str | None = None,
     target_records: int | None = None,
     batch_id: str | None = None,
+    should_stop=None,
 ) -> dict:
     """Free-form discovery + extraction (FetchFox-style).
 
@@ -179,6 +180,7 @@ def crawl(
         intent, client, max_pages=max_pages, max_depth=max_depth,
         same_domain=same_domain, on_event=on_event, on_data_page=on_data_page,
         needed_segments=(_needed_segments if (target is not None and segs) else None),
+        should_stop=should_stop,
     )
     result = crawler.run(url)
 
@@ -222,6 +224,9 @@ def crawl(
                          max_extracts, len(pages_to_extract), len(result.data_page_urls))
             fetcher = make_fetcher()
             for page_url in pages_to_extract:
+                if should_stop is not None and should_stop():
+                    log.info("extraction ejected by user after %d page(s)", len(extracted_urls))
+                    break
                 res = fetcher.get(page_url)
                 if not res.ok:
                     log.info("extract skip %s (%s)", page_url, res.reason[:80])
@@ -257,11 +262,18 @@ def crawl(
                 "errors": result.stats.get("errors", 0),
                 "columns": [h for h, _ in columns], "run_id": run_id,
                 "llm_calls": client.calls,
+                # Stopped early by the user's Eject button (partial results kept).
+                "ejected": bool(result.stats.get("ejected") or (should_stop and should_stop())),
+                "started": result.stats.get("started"),
+                "finished": result.stats.get("finished"),
+                "engine": result.stats.get("engine"),
+                "model": result.stats.get("model"),
                 # Why a crawl found nothing, + the per-URL outcomes behind it.
                 "diagnosis": diagnose(result),
                 "field_coverage": {"found": sorted(seen_fields),
                                    "missing": missing_fields},
-                "visited": result.visited[:30]}
+                # Full per-step trace for history traceability (bounded for size).
+                "visited": result.visited[:200]}
     if missing_fields:
         log.info("field coverage: %d/%d requested fields never appeared on any "
                  "data page (likely not published by this source): %s",

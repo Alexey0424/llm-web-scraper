@@ -118,6 +118,30 @@ def test_delete_run(client, tmp_path):
     assert client.post(f"/delete-run/{rid}").status_code == 404  # gone now
 
 
+def test_crawl_stop_when_idle_returns_409(client):
+    r = client.post("/crawl-stop")
+    assert r.status_code == 409 and not r.get_json()["ok"]
+
+
+def test_run_trace_returns_info_and_steps(client, tmp_path):
+    s = FreeFormStore(tmp_path / "ui.sqlite")
+    cols = [("Name", "name"), ("Source URL", "source_url")]
+    rid = s.start_run("https://a.com", "agents: name", cols, now_iso())
+    s.finish_run(rid, now_iso(), {
+        "pages_fetched": 3, "records": 1, "ejected": True, "llm_calls": 5,
+        "visited": [{"url": "https://a.com", "status": "ok", "note": "data page"},
+                    {"url": "https://a.com/x", "status": "blocked", "note": "robots"}],
+    })
+    s.add_record(rid, "k", "https://a.com", {"name": "Ann"}, now_iso())
+    s.close()
+    j = client.get(f"/run/{rid}/trace").get_json()
+    assert j["ok"]
+    assert j["info"]["pages_fetched"] == 3 and j["info"]["ejected"] is True
+    assert j["rows"] == 1
+    assert len(j["steps"]) == 2 and j["steps"][1]["status"] == "blocked"
+    assert client.get("/run/999999/trace").status_code == 404
+
+
 def test_delete_export_rejects_traversal(client):
     for bad in ["../secret.txt", "a/b.xlsx", "..\\x"]:
         r = client.post(f"/delete-export/{bad}")

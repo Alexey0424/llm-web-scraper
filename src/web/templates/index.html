@@ -460,6 +460,25 @@
     .dupe-banner b { color:var(--ink); font-variant-numeric:tabular-nums; }
     tbody tr.row-seen { background:color-mix(in srgb, var(--warn) 7%, transparent); }
     tbody tr.row-seen:hover { background:color-mix(in srgb, var(--warn) 12%, transparent); }
+
+    /* ---- History traceability (per-crawl steps) ----------------------- */
+    .timeline li { flex-wrap:wrap; }
+    .trace-panel { flex-basis:100%; width:100%; margin-top:var(--sp-2); }
+    .trace-panel[hidden] { display:none; }
+    .trace-box { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md);
+      padding:var(--sp-4); }
+    .trace-stats { display:flex; flex-wrap:wrap; gap:6px 8px; margin-bottom:var(--sp-3); }
+    .trace-stats .kv { display:inline-flex; align-items:baseline; gap:5px; padding:4px 9px; border-radius:var(--r-pill);
+      background:var(--surface); border:1px solid var(--border); font-size:.78rem; color:var(--muted); }
+    .trace-stats .kv b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:650; }
+    .trace-steps { list-style:none; margin:0; padding:0; max-height:320px; overflow:auto; }
+    .trace-steps li { display:flex; gap:10px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--border);
+      flex-wrap:nowrap; }
+    .trace-steps li:last-child { border-bottom:0; }
+    .trace-steps .s-url { font-family:var(--mono); font-size:.76rem; color:var(--muted); flex:1; min-width:0;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .trace-steps .s-note { font-size:.78rem; color:var(--text); white-space:normal; max-width:46ch; }
+    .trace-empty { color:var(--muted); font-size:.82rem; }
   </style>
 </head>
 <body>
@@ -586,6 +605,12 @@
       <h2 id="crawl-title">Discovering…</h2>
       <span class="spacer"></span>
       <span class="tag tag--info"><span class="dot"></span> crawling</span>
+      <button type="button" class="btn-danger btn-sm" id="crawl-eject" data-busy="Ejecting…"
+              title="Stop the crawl now and keep whatever was extracted so far">
+        <span class="spinner"></span>
+        <svg class="lead-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h14M5 14L12 5l7 9z"/></svg>
+        <span class="label">Eject</span>
+      </button>
     </div>
     <!-- Batch progress: one dot per operation + "Operation N of M" -->
     <div class="batch-track" id="batch-track" hidden>
@@ -725,6 +750,7 @@
             <span class="when" style="flex:1; min-width:0">
               <a href="{{ url_for('index', run=r.id) }}" style="color:var(--ink); font-weight:550">{{ r.prompt[:90] if r.prompt else '(no prompt)' }}{% if r.prompt and r.prompt|length > 90 %}…{% endif %}</a>
               {% if r.batch_id %}<span class="tag tag--muted" style="margin-left:6px" title="Part of a batch run">batch</span>{% endif %}
+              {% if r.ejected %}<span class="tag tag--warn" style="margin-left:6px" title="You ejected this crawl; results are partial">ejected</span>{% endif %}
               {% if r.rows == 0 and r.diagnosis %}
                 <span class="meta" style="display:block; white-space:normal; color:var(--warn)">⚠ {{ r.diagnosis }}</span>
               {% else %}
@@ -744,9 +770,14 @@
               <span>Excel</span>
             </a>
             {% endif %}
+            <button type="button" class="btn-subtle btn-sm run-trace" data-run="{{ r.id }}" aria-expanded="false" title="Show crawl info + each step of the process">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+              <span>Trace</span>
+            </button>
             <button type="button" class="icon-del run-del" data-run="{{ r.id }}" title="Delete this crawl" aria-label="Delete crawl #{{ r.id }}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-9 0v14a1 1 0 001 1h8a1 1 0 001-1V6"/></svg>
             </button>
+            <div class="trace-panel" data-trace="{{ r.id }}" hidden></div>
           </li>
         {% endfor %}
       </ul>
@@ -1125,8 +1156,9 @@
         clearInterval(crawlPoll); crawlPoll = null;
         fetch('/crawl-ack', { method: 'POST' });
         if (s.state === 'done') {
-          setBar(100); setText('cc-pct', '100%'); setText('cc-eta', '0:00');
-          queueToast(s.msg || 'Discovery complete.', 'success');
+          if (s.ejected) { setText('cc-eta', '—'); }
+          else { setBar(100); setText('cc-pct', '100%'); setText('cc-eta', '0:00'); }
+          queueToast(s.msg || 'Discovery complete.', s.ejected ? 'info' : 'success');
           setTimeout(function () { location.reload(); }, 900);
         } else {
           // Keep the panel up and show where it broke; the user dismisses it.
@@ -1163,7 +1195,19 @@
     if (crawlPanel) crawlPanel.hidden = false;
     var eb = $('#crawl-error'); if (eb) eb.hidden = true;  // clear any prior error
     setBusy(crawlBtn, true);
+    var ej = $('#crawl-eject'); if (ej) { ej.disabled = false; setBusy(ej, false); }
   }
+
+  /* ---- Eject: stop the running crawl, keep partial results ------- */
+  var ejectBtn = $('#crawl-eject');
+  if (ejectBtn) ejectBtn.addEventListener('click', function () {
+    if (!confirm('Eject the crawl now? It stops after the current page and keeps whatever was extracted so far.')) return;
+    setBusy(ejectBtn, true); ejectBtn.disabled = true;
+    fetch('/crawl-stop', { method: 'POST', headers: { 'X-Requested-With': 'fetch' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { toast(j.msg || (j.ok ? 'Ejecting…' : (j.error || 'Could not eject')), j.ok ? 'info' : 'error'); })
+      .catch(function () { toast('Network error ejecting', 'error'); setBusy(ejectBtn, false); ejectBtn.disabled = false; });
+  });
 
   var ceDismiss = $('#ce-dismiss');
   if (ceDismiss) ceDismiss.addEventListener('click', function () { location.reload(); });
@@ -1299,14 +1343,62 @@
   }
   var historyList = $('#history-list');
   if (historyList) historyList.addEventListener('click', function (e) {
-    var del = e.target.closest('.run-del'); if (!del) return;
-    var id = del.getAttribute('data-run');
-    postJSON('/delete-run/' + id).then(function (j) {
-      if (!j.ok) { toast(j.error || 'Delete failed', 'error'); return; }
-      var li = del.closest('li'); if (li) li.remove();
-      toast(j.msg || 'Deleted.', 'info');
-    }).catch(function () { toast('Delete failed', 'error'); });
+    var del = e.target.closest('.run-del');
+    if (del) {
+      var id = del.getAttribute('data-run');
+      postJSON('/delete-run/' + id).then(function (j) {
+        if (!j.ok) { toast(j.error || 'Delete failed', 'error'); return; }
+        var li = del.closest('li'); if (li) li.remove();
+        toast(j.msg || 'Deleted.', 'info');
+      }).catch(function () { toast('Delete failed', 'error'); });
+      return;
+    }
+    var trc = e.target.closest('.run-trace');
+    if (trc) { toggleTrace(trc); return; }
   });
+
+  /* ---- Traceability: crawl info + each step of the process ------- */
+  function stepStatusClass(st) {
+    return st === 'data_page' || st === 'ok' ? 'ok' : (st === 'blocked' ? 'warn' : 'err');
+  }
+  function renderTrace(d) {
+    function kv(label, val) {
+      return (val === null || val === undefined || val === '') ? '' :
+        '<span class="kv">' + esc(label) + ' <b>' + esc(val) + '</b></span>';
+    }
+    var i = d.info || {};
+    var stats = [
+      kv('records', d.rows), kv('pages fetched', i.pages_fetched),
+      kv('data pages', i.data_pages), kv('blocked', i.blocked),
+      kv('errors', i.errors), kv('LLM calls', i.llm_calls),
+      kv('target', i.target_records), kv('model', i.model),
+      (i.ejected ? '<span class="kv"><b style="color:var(--warn)">ejected</b></span>' : '')
+    ].join('');
+    var steps = (d.steps || []).map(function (v) {
+      return '<li><span class="tag tag--' + stepStatusClass(v.status) + '"><span class="dot"></span>' +
+        esc(v.status || '') + '</span><span class="s-url" title="' + esc(v.url) + '">' + esc(v.url) + '</span>' +
+        (v.note ? '<span class="s-note">' + esc(v.note) + '</span>' : '') + '</li>';
+    }).join('');
+    var diag = i.diagnosis ? '<p class="meta" style="margin:0 0 8px; white-space:normal">' + esc(i.diagnosis) + '</p>' : '';
+    return '<div class="trace-box">' + diag + '<div class="trace-stats">' + stats + '</div>' +
+      '<div class="block-label">Steps (' + (d.steps || []).length + ')</div>' +
+      (steps ? '<ul class="trace-steps">' + steps + '</ul>'
+             : '<p class="trace-empty">No per-step trace was recorded for this crawl.</p>') + '</div>';
+  }
+  function toggleTrace(btn) {
+    var id = btn.getAttribute('data-run');
+    var li = btn.closest('li');
+    var panel = li ? li.querySelector('.trace-panel[data-trace="' + id + '"]') : null;
+    if (!panel) return;
+    if (!panel.hidden) { panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); return; }
+    btn.setAttribute('aria-expanded', 'true');
+    panel.hidden = false;
+    panel.innerHTML = '<div class="trace-box trace-empty">Loading trace…</div>';
+    fetch('/run/' + id + '/trace').then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { panel.innerHTML = '<div class="trace-box trace-empty">' + esc(d.error || 'Could not load trace') + '</div>'; return; }
+      panel.innerHTML = renderTrace(d);
+    }).catch(function () { panel.innerHTML = '<div class="trace-box trace-empty">Network error loading trace</div>'; });
+  }
   var clearHistBtn = $('#clear-history-btn');
   if (clearHistBtn) clearHistBtn.addEventListener('click', function () {
     if (!confirm('Delete ALL crawl history? Exported files are kept.')) return;

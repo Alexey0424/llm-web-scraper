@@ -26,8 +26,13 @@ vs. effort. Nothing here is built yet; "Done this round" lists what already ship
   carries identifiers; fuzzy adds recall at the cost of false-merge risk + deps.
 
 ## High value, low effort
-1. **Pause / cancel a running crawl or batch.** A stop button that sets a flag the
-   crawl loop checks between pages. Today a run can only finish or error.
+1. ~~**Pause / cancel a running crawl or batch.**~~ DONE 2026-06-07 — "Eject"
+   button (cooperative `should_stop` flag the discovery + extraction loops check);
+   state="ejected", partial results kept (records stored incrementally); batch
+   eject stops the queue and still builds the combined export. Also DONE: per-crawl
+   **traceability** — `/run/<id>/trace` + an expandable history panel showing crawl
+   info + each step (per-URL status/note); steps persisted in `stats.visited` (cap
+   raised to 200). Fixed a latent bug: `runner.run_crawl` never forwarded `batch_id`.
 2. **Persisted batches view.** A dedicated "Batches" list (grouped by `batch_id`)
    instead of badged rows mixed into history, each with its combined download.
 3. **CSV/JSONL alongside the combined Excel.** The single-run path already writes

@@ -80,6 +80,7 @@ class DiscoveryCrawler:
         on_event=None,
         on_data_page=None,
         needed_segments=None,
+        should_stop=None,
     ):
         self.intent = intent
         self.client = client
@@ -98,6 +99,10 @@ class DiscoveryCrawler:
         # budget reaches UNDER-covered segments instead of re-drilling a
         # productive-but-full one (stops the yield-feedback from monopolizing).
         self.needed_segments = needed_segments
+        # Optional callable() -> bool: when it returns True the crawl stops at the
+        # next loop iteration (the web "Eject" button). Records already extracted
+        # are kept — they're stored incrementally.
+        self.should_stop = should_stop
         self.links = LinkClassifier(client)
         self.pages = PageClassifier(client)
         # The detected individual-record URL prefix (e.g. "/profile"), learned
@@ -125,7 +130,12 @@ class DiscoveryCrawler:
         reproposed = False  # pattern re-proposal (#4) fires at most once
         steer_segs = self.intent.segments or self.intent.states
 
+        ejected = False
         while len(frontier) and fetched < self.max_pages:
+            if self.should_stop is not None and self.should_stop():
+                ejected = True
+                log.info("crawl ejected by user after %d page(s)", fetched)
+                break
             item = frontier.pop()
             if item is None:
                 break
@@ -281,6 +291,7 @@ class DiscoveryCrawler:
             "finished": now_iso(),
             "engine": self.fetcher.engine,
             "model": self.client.model if self.client else None,
+            "ejected": ejected,
         }
         log.info("crawl done: fetched=%d data_pages=%d blocked=%d errors=%d llm_calls=%d",
                  fetched, len(result.data_pages), blocked, errors, result.stats["llm_calls"])

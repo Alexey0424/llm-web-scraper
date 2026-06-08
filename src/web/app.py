@@ -39,6 +39,9 @@ def _ff_store() -> FreeFormStore:
 # The UI polls /crawl-status for the live plan + per-call timeline.
 # ---------------------------------------------------------------------------
 _crawl_lock = threading.Lock()
+# Set by /crawl-stop ("Eject"); the crawl checks it cooperatively and stops,
+# keeping whatever was extracted so far (records are stored incrementally).
+_cancel_event = threading.Event()
 _crawl: dict = {
     "state": "idle", "msg": "", "error": None, "url": "", "prompt": "",
     "events": [], "fetched": 0, "data_pages": 0, "plan": None, "llm_calls": 0,
@@ -48,6 +51,8 @@ _crawl: dict = {
     "records": 0, "target": None, "started_at": None,
     # Batch (bulk/queue) progress; None for an individual crawl.
     "batch": None,
+    # True when the user ejected the run; partial results are still shown.
+    "ejected": False,
 }
 
 
@@ -114,14 +119,20 @@ def _run_crawl_job(url: str, prompt: str, states: list[str], max_pages: int,
 
     try:
         stats = runner.run_crawl(store, url, prompt, states, max_pages, max_depth,
-                                 on_event, model, max_extracts, target_records)
+                                 on_event, model, max_extracts, target_records,
+                                 should_stop=_cancel_event.is_set)
         n = stats.get("records", 0)
         cols = stats.get("columns", [])
         dp = _crawl["data_pages"]
-        msg = (f"Discovery complete — {dp} data page(s), {n} record(s) extracted "
-               f"into {len(cols)} columns.")
+        ejected = _cancel_event.is_set() or bool(stats.get("ejected"))
+        if ejected:
+            msg = (f"Crawl ejected by you — {n} record(s) extracted so far "
+                   f"({dp} data page(s)).")
+        else:
+            msg = (f"Discovery complete — {dp} data page(s), {n} record(s) extracted "
+                   f"into {len(cols)} columns.")
         with _crawl_lock:
-            _crawl.update(state="done", msg=msg, error=None)
+            _crawl.update(state="done", msg=msg, error=None, ejected=ejected)
     except Exception as exc:  # noqa: BLE001
         full, where = _error_detail(exc)
         with _crawl_lock:
@@ -220,7 +231,16 @@ def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages:
         return on_event
 
     try:
+        ejected = False
         for idx, job in enumerate(jobs):
+            # Eject between operations: stop launching the rest, mark them skipped.
+            if _cancel_event.is_set():
+                ejected = True
+                with _crawl_lock:
+                    for j in _crawl["batch"]["jobs"][idx:]:
+                        if j["state"] == "pending":
+                            j["state"] = "skipped"
+                break
             with _crawl_lock:
                 _crawl.update(records=0, fetched=0, data_pages=0, plan=None,
                               url=job["url"], prompt=job["prompt"])
@@ -230,7 +250,7 @@ def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages:
                 stats = runner.run_crawl(store, job["url"], job["prompt"], states,
                                          max_pages, max_depth, make_on_event(idx),
                                          model, max_extracts, target_records,
-                                         batch_id=batch_id)
+                                         batch_id=batch_id, should_stop=_cancel_event.is_set)
                 with _crawl_lock:
                     _crawl["batch"]["jobs"][idx].update(
                         state="done", finished_at=_now(),
@@ -241,18 +261,24 @@ def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages:
                         state="error", finished_at=_now(), error=str(exc))
                     _crawl["events"].append({"kind": "error", "url": job["url"],
                                              "status": "error", "note": str(exc)[:160]})
+            if _cancel_event.is_set():
+                ejected = True  # ejected mid-operation (that op kept its partial rows)
 
         export_path, removed = _build_batch_export(store, batch_id, combine)
         done = sum(1 for j in _crawl["batch"]["jobs"] if j["state"] == "done")
         total_recs = sum(j.get("records", 0) for j in _crawl["batch"]["jobs"])
         dup_note = (f" {removed} cross-site duplicate(s) removed." if removed else "")
-        msg = (f"Batch complete — {done}/{total} operation(s) succeeded, "
-               f"{total_recs} record(s) total.{dup_note}")
+        if ejected:
+            msg = (f"Batch ejected by you — {done}/{total} operation(s) done, "
+                   f"{total_recs} record(s) so far.{dup_note}")
+        else:
+            msg = (f"Batch complete — {done}/{total} operation(s) succeeded, "
+                   f"{total_recs} record(s) total.{dup_note}")
         with _crawl_lock:
             if export_path:
                 _crawl["batch"]["export"] = Path(export_path).name
             _crawl["batch"]["duplicates_removed"] = removed
-            _crawl.update(state="done", msg=msg, error=None)
+            _crawl.update(state="done", msg=msg, error=None, ejected=ejected)
     except Exception as exc:  # noqa: BLE001
         full, where = _error_detail(exc)
         with _crawl_lock:
@@ -317,6 +343,7 @@ def create_app() -> Flask:
                     "columns": [h for h, _ in json.loads(r.get("columns_json") or "[]")],
                     "diagnosis": rstats.get("diagnosis", ""),
                     "batch_id": r.get("batch_id"),
+                    "ejected": bool(rstats.get("ejected")),
                 })
             ctx = {
                 "exports": _export_files(),
@@ -379,10 +406,11 @@ def create_app() -> Flask:
         with _crawl_lock:
             if _crawl["state"] == "running":
                 return jsonify(ok=False, error="A discovery crawl is already running."), 409
+            _cancel_event.clear()
             _crawl.update(state="running", msg="", error=None, url=url, prompt=prompt,
                           events=[], fetched=0, data_pages=0, plan=None, llm_calls=0,
                           trace=None, where=None, records=0, target=target_records,
-                          started_at=_now(), batch=None)
+                          started_at=_now(), batch=None, ejected=False)
 
         threading.Thread(
             target=_run_crawl_job,
@@ -432,11 +460,12 @@ def create_app() -> Flask:
         with _crawl_lock:
             if _crawl["state"] == "running":
                 return jsonify(ok=False, error="A discovery crawl is already running."), 409
+            _cancel_event.clear()
             _crawl.update(state="running", msg="", error=None,
                           url=jobs[0]["url"], prompt=jobs[0]["prompt"],
                           events=[], fetched=0, data_pages=0, plan=None, llm_calls=0,
                           trace=None, where=None, records=0, target=target_records,
-                          started_at=_now(), batch=None)
+                          started_at=_now(), batch=None, ejected=False)
 
         threading.Thread(
             target=_run_batch_job,
@@ -452,12 +481,52 @@ def create_app() -> Flask:
             job["events"] = list(_crawl["events"])
         return jsonify(job)
 
+    @app.route("/crawl-stop", methods=["POST"])
+    def crawl_stop():
+        """Eject: ask the running crawl/batch to stop at its next checkpoint."""
+        with _crawl_lock:
+            running = _crawl["state"] == "running"
+        if not running:
+            return jsonify(ok=False, error="No crawl is running."), 409
+        _cancel_event.set()
+        return jsonify(ok=True, msg="Ejecting — stopping after the current page; partial results are kept.")
+
     @app.route("/crawl-ack", methods=["POST"])
     def crawl_ack():
         with _crawl_lock:
             if _crawl["state"] in ("done", "error"):
-                _crawl.update(state="idle", msg="", error=None, trace=None, where=None)
+                _crawl.update(state="idle", msg="", error=None, trace=None, where=None,
+                              ejected=False)
         return jsonify(ok=True)
+
+    @app.route("/run/<int:run_id>/trace")
+    def run_trace(run_id: int):
+        """Traceability: a past crawl's info + each step of the process (per-URL)."""
+        ff = _ff_store()
+        try:
+            run = ff.get_run(run_id)
+            if not run:
+                return jsonify(ok=False, error=f"Run #{run_id} not found."), 404
+            stats = json.loads(run.get("stats_json") or "{}")
+            columns = json.loads(run.get("columns_json") or "[]")
+            rows = ff.count_for_run(run_id)
+        finally:
+            ff.close()
+        info = {k: stats.get(k) for k in (
+            "pages_fetched", "blocked", "errors", "llm_calls", "data_pages",
+            "records", "target_records", "target_met", "ejected", "engine",
+            "model", "started", "finished", "diagnosis")}
+        return jsonify(
+            ok=True,
+            run={"id": run["id"], "seed": run.get("seed"), "prompt": run.get("prompt"),
+                 "started": run.get("started"), "finished": run.get("finished"),
+                 "batch_id": run.get("batch_id")},
+            columns=[h for h, _ in columns],
+            rows=rows,
+            info=info,
+            field_coverage=stats.get("field_coverage") or {},
+            steps=stats.get("visited") or [],
+        )
 
     def _delete_all_exports() -> int:
         n = 0

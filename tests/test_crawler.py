@@ -129,6 +129,17 @@ def test_discovery_crawl_finds_roster_pages():
     assert result.stats["pages_fetched"] >= 3
 
 
+def test_discovery_crawl_ejects_when_should_stop():
+    # Cooperative cancellation: should_stop() True -> the loop breaks before any
+    # fetch, and the result is flagged ejected (partial results are kept upstream).
+    intent = Planner(client=None).plan("agents", f"{BASE}/index.html", ["NJ"])
+    crawler = DiscoveryCrawler(intent, client=None, fetcher=DirFetcher(FIX),
+                               max_pages=20, should_stop=lambda: True)
+    result = crawler.run(f"{BASE}/index.html")
+    assert result.stats["pages_fetched"] == 0
+    assert result.stats["ejected"] is True
+
+
 def test_result_to_source_cfg_shape():
     intent = Planner(client=None).plan("agents", f"{BASE}/index.html", ["NJ", "PA"])
     crawler = DiscoveryCrawler(intent, client=None, fetcher=DirFetcher(FIX), max_pages=20)
