@@ -451,6 +451,15 @@
     .batch-track .step.error { background:var(--err); border-color:var(--err); }
     .batch-track .lbl { color:var(--muted); font-size:.82rem; }
     .batch-track .lbl b { color:var(--ink); font-variant-numeric:tabular-nums; }
+
+    /* ---- Already-exported recognition --------------------------------- */
+    .dupe-banner { display:flex; align-items:flex-start; gap:10px; margin:0 0 var(--sp-4);
+      padding:11px 14px; border-radius:var(--r-md); color:var(--text);
+      background:var(--warn-dim); border:1px solid color-mix(in srgb, var(--warn) 34%, var(--border-2)); }
+    .dupe-banner svg { width:18px; height:18px; flex:none; margin-top:1px; color:var(--warn); }
+    .dupe-banner b { color:var(--ink); font-variant-numeric:tabular-nums; }
+    tbody tr.row-seen { background:color-mix(in srgb, var(--warn) 7%, transparent); }
+    tbody tr.row-seen:hover { background:color-mix(in srgb, var(--warn) 12%, transparent); }
   </style>
 </head>
 <body>
@@ -647,15 +656,23 @@
       <span class="meta">Prompt</span><span style="color:var(--ink)">“{{ ff_run.prompt }}”</span>
       <span class="meta">Columns</span><span>{% for header, key in ff_columns %}<span class="tag tag--muted" style="margin:0 5px 5px 0">{{ header }}</span>{% endfor %}</span>
     </div>
+    {% if seen_count %}
+    <div class="dupe-banner" title="Matched by email, then phone, then name — against your exported .xlsx files only">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+      <span><b>{{ seen_count }}</b> of <b>{{ ff_rows|length }}</b> record(s) here were already saved in a previous export. They're marked <span class="tag tag--warn" style="vertical-align:middle">exported</span> in the first column.</span>
+    </div>
+    {% endif %}
     {% if ff_rows %}
     <div class="tbl-scroll">
       <table id="ff-table">
         <thead>
-          <tr>{% for header, key in ff_columns %}<th><span class="th-in">{{ header }}</span></th>{% endfor %}</tr>
+          <tr><th><span class="th-in" title="Already present in a previous export file">Exported</span></th>{% for header, key in ff_columns %}<th><span class="th-in">{{ header }}</span></th>{% endfor %}</tr>
         </thead>
         <tbody id="ff-body">
         {% for row in ff_rows %}
-          <tr data-search="{% for header, key in ff_columns %}{{ (row.get(key) or '')|lower }} {% endfor %}">
+          {% set seen_in = row.get('__seen_in__') %}
+          <tr data-search="{% for header, key in ff_columns %}{{ (row.get(key) or '')|lower }} {% endfor %}{% if seen_in %}exported{% endif %}"{% if seen_in %} class="row-seen"{% endif %}>
+            <td>{% if seen_in %}<span class="tag tag--warn" title="Already in: {{ seen_in|join(', ') }}"><span class="dot"></span>exported</span>{% else %}<span class="tag tag--muted">new</span>{% endif %}</td>
             {% for header, key in ff_columns %}
               {% set val = row.get(key) %}
               {% if key == 'source_url' %}

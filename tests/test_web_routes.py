@@ -40,12 +40,26 @@ def test_build_batch_export_stack(tmp_path, monkeypatch):
     cols = [("Name", "name"), ("Source URL", "source_url")]
     for seed in ("https://a.com", "https://b.com"):
         rid = s.start_run(seed, "p", cols, now_iso(), batch_id="b1")
-        s.add_record(rid, f"{seed}", "u", {"name": "X"}, now_iso())
-    path = app_mod._build_batch_export(s, "b1", "stack")
+        s.add_record(rid, f"{seed}", "u", {"name": "X" + seed}, now_iso())
+    path, removed = app_mod._build_batch_export(s, "b1", "stack")
     s.close()
     ws = openpyxl.load_workbook(path).active
     assert [c.value for c in ws[1]][0] == "Site"
-    assert ws.max_row == 3  # header + 2 rows
+    assert ws.max_row == 3 and removed == 0  # header + 2 distinct rows
+
+
+def test_build_batch_export_stack_dedups_cross_site(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_mod, "EXPORTS_DIR", tmp_path / "exports")
+    s = FreeFormStore(tmp_path / "ff.sqlite")
+    cols = [("Name", "name"), ("Email", "email"), ("Source URL", "source_url")]
+    r1 = s.start_run("https://a.com", "p", cols, now_iso(), batch_id="bd")
+    s.add_record(r1, "ann", "u", {"name": "Ann", "email": "ann@x.com"}, now_iso())
+    r2 = s.start_run("https://b.com", "p", cols, now_iso(), batch_id="bd")
+    s.add_record(r2, "ann2", "u", {"name": "Ann A", "email": "ANN@x.com"}, now_iso())  # same email
+    path, removed = app_mod._build_batch_export(s, "bd", "stack")
+    s.close()
+    ws = openpyxl.load_workbook(path).active
+    assert removed == 1 and ws.max_row == 2  # header + 1 surviving row
 
 
 def test_build_batch_export_sheets(tmp_path, monkeypatch):
@@ -55,10 +69,10 @@ def test_build_batch_export_sheets(tmp_path, monkeypatch):
     s.add_record(r1, "k", "u", {"name": "A"}, now_iso())
     r2 = s.start_run("https://b.com", "p2", [("Price", "price")], now_iso(), batch_id="b2")
     s.add_record(r2, "k", "u", {"price": "9"}, now_iso())
-    path = app_mod._build_batch_export(s, "b2", "sheets")
+    path, removed = app_mod._build_batch_export(s, "b2", "sheets")
     s.close()
     wb = openpyxl.load_workbook(path)
-    assert len(wb.sheetnames) == 2
+    assert len(wb.sheetnames) == 2 and removed == 0
 
 
 # --- batch dispatch ---------------------------------------------------------

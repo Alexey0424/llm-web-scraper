@@ -147,14 +147,19 @@ def _combine_columns(runs: list[dict]) -> list[list]:
     return out
 
 
-def _build_batch_export(store: FreeFormStore, batch_id: str, combine: str) -> str | None:
-    """Build the combined Excel for a batch and return its path (None if empty)."""
+def _build_batch_export(store: FreeFormStore, batch_id: str, combine: str):
+    """Build the combined Excel for a batch.
+
+    Returns ``(path, removed)`` where ``removed`` is the number of cross-site
+    duplicate rows dropped (stacked/bulk mode only). ``path`` is None if empty.
+    """
+    from ..crawler import dedup
     from ..exporters import dynamic_exporter
 
     runs = store.runs_for_batch(batch_id)
     runs = [r for r in runs if store.count_for_run(r["id"]) > 0]
     if not runs:
-        return None
+        return None, 0
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     if combine == "sheets":
@@ -165,12 +170,13 @@ def _build_batch_export(store: FreeFormStore, batch_id: str, combine: str) -> st
             for r in runs
         ]
         path = EXPORTS_DIR / f"batch_queue_{ts}.xlsx"
-        return dynamic_exporter.write_xlsx_multisheet(sheets, path)
-    # default: stacked single sheet (bulk shared-prompt)
+        return dynamic_exporter.write_xlsx_multisheet(sheets, path), 0
+    # default: stacked single sheet (bulk shared-prompt) + cross-site dedup
     columns = _combine_columns(runs)
     sections = [(r.get("seed") or f"run{r['id']}", store.records_for_run(r["id"])) for r in runs]
+    sections, removed = dedup.dedupe_sections(sections)
     path = EXPORTS_DIR / f"batch_bulk_{ts}.xlsx"
-    return dynamic_exporter.write_xlsx_stacked(columns, sections, path)
+    return dynamic_exporter.write_xlsx_stacked(columns, sections, path), removed
 
 
 def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages: int,
@@ -236,14 +242,16 @@ def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages:
                     _crawl["events"].append({"kind": "error", "url": job["url"],
                                              "status": "error", "note": str(exc)[:160]})
 
-        export_path = _build_batch_export(store, batch_id, combine)
+        export_path, removed = _build_batch_export(store, batch_id, combine)
         done = sum(1 for j in _crawl["batch"]["jobs"] if j["state"] == "done")
         total_recs = sum(j.get("records", 0) for j in _crawl["batch"]["jobs"])
+        dup_note = (f" {removed} cross-site duplicate(s) removed." if removed else "")
         msg = (f"Batch complete — {done}/{total} operation(s) succeeded, "
-               f"{total_recs} record(s) total.")
+               f"{total_recs} record(s) total.{dup_note}")
         with _crawl_lock:
             if export_path:
                 _crawl["batch"]["export"] = Path(export_path).name
+            _crawl["batch"]["duplicates_removed"] = removed
             _crawl.update(state="done", msg=msg, error=None)
     except Exception as exc:  # noqa: BLE001
         full, where = _error_detail(exc)
@@ -284,10 +292,21 @@ def create_app() -> Flask:
             sel_id = request.args.get("run", type=int)
             ff_run = ff.get_run(sel_id) if sel_id else ff.latest_run()
             ff_columns, ff_rows, ff_stats = [], [], {}
+            seen_count = 0
             if ff_run:
                 ff_columns = json.loads(ff_run.get("columns_json") or "[]")
                 ff_rows = ff.records_for_run(ff_run["id"])
                 ff_stats = json.loads(ff_run.get("stats_json") or "{}")
+                # Flag rows already present in a previous EXPORT file (exports are
+                # the source of truth for "already saved"). Deterministic key match.
+                from ..crawler import dedup
+                ledger = dedup.build_export_ledger(EXPORTS_DIR)
+                if ledger:
+                    for row in ff_rows:
+                        files = ledger.get(dedup.record_key(row) or "\0", [])
+                        if files:
+                            row["__seen_in__"] = files
+                            seen_count += 1
             ff_runs = []
             for r in ff.list_runs(20):
                 rstats = json.loads(r.get("stats_json") or "{}")
@@ -309,6 +328,7 @@ def create_app() -> Flask:
                 "ff_runs": ff_runs,
                 "ff_sel_id": ff_run["id"] if ff_run else None,
                 "record_count": len(ff_rows),
+                "seen_count": seen_count,
             }
             return render_template("index.html", **ctx)
         finally:
@@ -516,7 +536,7 @@ def create_app() -> Flask:
             # combine strategy: all-same-prompt batches stack; otherwise sheets.
             prompts = {r.get("prompt") for r in runs}
             combine = "stack" if len(prompts) == 1 else "sheets"
-            path = _build_batch_export(ff, batch_id, combine)
+            path, _removed = _build_batch_export(ff, batch_id, combine)
             if not path:
                 return jsonify(ok=False, error="This batch has no records to export."), 400
         finally:

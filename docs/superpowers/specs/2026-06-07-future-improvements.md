@@ -12,6 +12,18 @@ vs. effort. Nothing here is built yet; "Done this round" lists what already ship
 - Delete a single crawl, clear history, delete a single export, clear exports,
   reset everything (now also wipes export files).
 - `vanilla-base` tag + UI methodology badge.
+- **Cross-batch dedup** (item 8): bulk/stacked combine drops cross-site duplicates
+  by deterministic canonical key (email → phone → name+location); reports count.
+- **Already-exported recognition** (`src/crawler/dedup.py`): each discovered record
+  is flagged if it already appears in a previous export `.xlsx` (the export files
+  are the source of truth; the ledger is cached + invalidated by file mtime, so
+  deleting a file drops its rows). UI shows a banner + an "Exported" status column.
+
+## Remaining dedup enhancement
+- **Fuzzy / probabilistic matching** for records that have *no* email/phone (name
+  only) — Jaro-Winkler / token similarity, or a library (recordlinkage / Splink).
+  Deliberately deferred: the deterministic key is correct and fast for data that
+  carries identifiers; fuzzy adds recall at the cost of false-merge risk + deps.
 
 ## High value, low effort
 1. **Pause / cancel a running crawl or batch.** A stop button that sets a flag the
