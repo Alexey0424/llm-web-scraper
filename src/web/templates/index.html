@@ -14,76 +14,76 @@
   <style>
     /* =====================================================================
        THEME — two designed worlds, not one palette inverted.
-       Night: "the observatory at work" — pre-dawn indigo sky, instrument
-              glow, periwinkle signal lamps.
-       Day:   "the cartographer's desk" — white paper, indigo ink, crisp
-              hairlines, soft daylight shadows.
-       Brand seed: oklch(0.476 0.158 268.5)
+       Night: "ember workshop" — greyish-black charcoal, orange instrument
+              lamps, ember-filled buttons with near-black ink.
+       Day:   "terracotta on cream" — cream paper canvas, warm-white working
+              surfaces, burnt-orange primary, warm ink.
+       Brand anchor: ember orange (hue ~52)
        ===================================================================== */
     :root {
       color-scheme: dark;
-      /* Night sky: near-black with a faint cool indigo cast. */
-      --bg: oklch(0.135 0.012 268);
-      --bg-2: oklch(0.16 0.013 268);
-      --surface: oklch(0.185 0.013 268);
-      --surface-2: oklch(0.215 0.014 268);
-      --surface-3: oklch(0.26 0.016 268);
-      --border: oklch(0.27 0.018 268);
-      --border-2: oklch(0.32 0.02 268);
-      --border-strong: oklch(0.40 0.025 268);
-      --ink: oklch(0.965 0.006 268);
-      --text: oklch(0.83 0.012 268);
-      --muted: oklch(0.67 0.018 268);
-      /* Indigo, two voices: a fill that carries white text, and a brighter
-         periwinkle "signal" for links, live state, progress, focus. */
-      --primary: oklch(0.55 0.165 268);
-      --primary-hover: oklch(0.60 0.165 268);
-      --primary-ink: oklch(0.985 0.005 268);
-      --signal: oklch(0.76 0.115 268);
-      --signal-strong: oklch(0.82 0.10 268);
-      --accent-dim: oklch(0.55 0.165 268 / .16);
-      --accent-dim-2: oklch(0.65 0.14 268 / .24);
-      /* Status lamps — luminescent on the dark panel. */
+      /* Greyish black: warm-leaning charcoal, no blue cast. */
+      --bg: oklch(0.145 0.004 60);
+      --bg-2: oklch(0.17 0.005 60);
+      --surface: oklch(0.195 0.006 60);
+      --surface-2: oklch(0.225 0.007 60);
+      --surface-3: oklch(0.27 0.009 60);
+      --border: oklch(0.28 0.01 60);
+      --border-2: oklch(0.33 0.012 60);
+      --border-strong: oklch(0.41 0.015 60);
+      --ink: oklch(0.965 0.005 80);
+      --text: oklch(0.83 0.01 75);
+      --muted: oklch(0.67 0.015 70);
+      /* Ember, two voices: a glowing fill that carries dark ink, and a
+         brighter "signal" for links, live state, progress, focus. */
+      --primary: oklch(0.70 0.16 52);
+      --primary-hover: oklch(0.75 0.155 55);
+      --primary-ink: oklch(0.165 0.02 55);
+      --signal: oklch(0.75 0.15 55);
+      --signal-strong: oklch(0.81 0.13 60);
+      --accent-dim: oklch(0.70 0.16 52 / .15);
+      --accent-dim-2: oklch(0.72 0.15 55 / .25);
+      /* Status lamps — warn shifted to yellow so it never reads as brand. */
       --ok: oklch(0.80 0.16 155);   --ok-dim: oklch(0.72 0.17 155 / .15);
-      --warn: oklch(0.84 0.14 85);  --warn-dim: oklch(0.80 0.15 85 / .14);
-      --err: oklch(0.72 0.185 25);  --err-dim: oklch(0.65 0.20 25 / .16);
-      --ring: oklch(0.76 0.115 268 / .55);
-      --shadow-1: 0 1px 2px oklch(0.05 0.01 268 / .55);
-      --shadow-2: 0 14px 40px -16px oklch(0.04 0.01 268 / .85);
-      --glow: 0 0 0 1px oklch(0.65 0.14 268 / .25), 0 10px 34px -12px oklch(0.55 0.165 268 / .55);
+      --warn: oklch(0.86 0.14 98);  --warn-dim: oklch(0.82 0.15 98 / .13);
+      --err: oklch(0.70 0.19 22);   --err-dim: oklch(0.64 0.20 22 / .16);
+      --ring: oklch(0.75 0.15 55 / .55);
+      --shadow-1: 0 1px 2px oklch(0.05 0.005 60 / .55);
+      --shadow-2: 0 14px 40px -16px oklch(0.04 0.005 60 / .85);
+      --glow: 0 0 0 1px oklch(0.70 0.16 52 / .30), 0 10px 34px -12px oklch(0.65 0.16 52 / .50);
       --hairline: oklch(1 0 0 / .06);
-      --scrim: oklch(0.135 0.012 268 / .76);
+      --scrim: oklch(0.145 0.004 60 / .78);
     }
     [data-theme="light"] {
       color-scheme: light;
-      /* Daylight: a cool paper canvas, pure-white working surfaces. */
-      --bg: oklch(0.972 0.004 268);
-      --bg-2: oklch(0.955 0.005 268);
-      --surface: oklch(1 0 0);
-      --surface-2: oklch(0.975 0.004 268);
-      --surface-3: oklch(0.945 0.006 268);
-      --border: oklch(0.91 0.008 268);
-      --border-2: oklch(0.86 0.012 268);
-      --border-strong: oklch(0.76 0.02 268);
-      --ink: oklch(0.22 0.025 268);
-      --text: oklch(0.34 0.022 268);
-      --muted: oklch(0.50 0.022 268);
-      --primary: oklch(0.46 0.16 268);
-      --primary-hover: oklch(0.40 0.155 268);
-      --primary-ink: oklch(0.995 0 0);
-      --signal: oklch(0.46 0.16 268);
-      --signal-strong: oklch(0.38 0.15 268);
-      --accent-dim: oklch(0.46 0.16 268 / .08);
-      --accent-dim-2: oklch(0.46 0.16 268 / .15);
-      --ok: oklch(0.52 0.15 152);   --ok-dim: oklch(0.55 0.15 152 / .12);
-      --warn: oklch(0.52 0.13 75);  --warn-dim: oklch(0.62 0.14 80 / .15);
-      --err: oklch(0.52 0.19 27);   --err-dim: oklch(0.55 0.20 27 / .10);
-      --ring: oklch(0.46 0.16 268 / .45);
-      --shadow-1: 0 1px 2px oklch(0.30 0.03 268 / .07);
-      --shadow-2: 0 12px 30px -14px oklch(0.30 0.04 268 / .16);
-      --glow: 0 0 0 1px oklch(0.46 0.16 268 / .14), 0 10px 26px -12px oklch(0.46 0.16 268 / .28);
-      --hairline: oklch(0.30 0.03 268 / .04);
-      --scrim: oklch(0.972 0.004 268 / .78);
+      /* Daylight: cream canvas, warm-white working surfaces. */
+      --bg: oklch(0.962 0.018 88);
+      --bg-2: oklch(0.945 0.02 88);
+      --surface: oklch(0.99 0.007 90);
+      --surface-2: oklch(0.965 0.014 88);
+      --surface-3: oklch(0.935 0.018 86);
+      --border: oklch(0.90 0.022 85);
+      --border-2: oklch(0.85 0.026 80);
+      --border-strong: oklch(0.74 0.035 70);
+      --ink: oklch(0.235 0.02 55);
+      --text: oklch(0.35 0.022 55);
+      --muted: oklch(0.48 0.028 60);
+      --primary: oklch(0.52 0.15 48);
+      --primary-hover: oklch(0.46 0.145 48);
+      --primary-ink: oklch(0.995 0.004 90);
+      --signal: oklch(0.52 0.15 48);
+      --signal-strong: oklch(0.44 0.14 48);
+      --accent-dim: oklch(0.52 0.15 48 / .10);
+      --accent-dim-2: oklch(0.52 0.15 48 / .18);
+      --ok: oklch(0.50 0.14 152);   --ok-dim: oklch(0.55 0.15 152 / .13);
+      --warn: oklch(0.50 0.12 92);  --warn-dim: oklch(0.66 0.13 95 / .18);
+      --err: oklch(0.50 0.19 27);   --err-dim: oklch(0.55 0.20 27 / .11);
+      --ring: oklch(0.52 0.15 48 / .45);
+      --shadow-1: 0 1px 2px oklch(0.35 0.04 60 / .08);
+      --shadow-2: 0 12px 30px -14px oklch(0.35 0.05 60 / .18);
+      --glow: 0 0 0 1px oklch(0.52 0.15 48 / .15), 0 10px 26px -12px oklch(0.52 0.15 48 / .30);
+      --hairline: oklch(0.35 0.04 60 / .05);
+      --scrim: oklch(0.962 0.018 88 / .80);
     }
     :root {
       --r-lg: 14px; --r-md: 10px; --r-sm: 8px; --r-pill: 999px;
@@ -113,27 +113,33 @@
 
     /* ---- Ambient sky (theme-specific, never interactive) --------------- */
     .sky { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
-    /* Night: a pre-dawn indigo horizon glow high above the content. */
+    /* Night: a banked ember glow high above the charcoal workbench. */
     .sky::before {
       content: ""; position: absolute; left: 50%; top: -34vw; transform: translateX(-50%);
-      width: 92vw; height: 56vw; border-radius: 50%; filter: blur(72px); opacity: .85;
-      background: radial-gradient(closest-side, oklch(0.42 0.14 268 / .34), oklch(0.30 0.10 280 / .12) 55%, transparent 75%);
+      width: 92vw; height: 56vw; border-radius: 50%; filter: blur(72px); opacity: .8;
+      background: radial-gradient(closest-side, oklch(0.45 0.12 50 / .30), oklch(0.32 0.08 40 / .10) 55%, transparent 75%);
     }
     .sky::after {
       content: ""; position: absolute; right: -14vw; bottom: -22vw;
-      width: 52vw; height: 40vw; border-radius: 50%; filter: blur(90px); opacity: .5;
-      background: radial-gradient(closest-side, oklch(0.40 0.10 300 / .20), transparent 70%);
+      width: 52vw; height: 40vw; border-radius: 50%; filter: blur(90px); opacity: .45;
+      background: radial-gradient(closest-side, oklch(0.40 0.09 70 / .18), transparent 70%);
     }
-    /* Day: a clean wash of light from above; no glow, just air. */
+    /* Day: warm light pooling on the cream paper; no glow, just sun. */
     [data-theme="light"] .sky::before {
       filter: blur(60px); opacity: 1; top: -42vw;
-      background: radial-gradient(closest-side, oklch(0.93 0.018 268 / .9), transparent 72%);
+      background: radial-gradient(closest-side, oklch(0.93 0.045 85 / .9), transparent 72%);
     }
     [data-theme="light"] .sky::after { display: none; }
 
     a { color: var(--signal); text-decoration: none; }
     a:hover { text-decoration: underline; }
     ::selection { background: var(--accent-dim-2); }
+    /* Themed scrollbars on the inner lists (timeline, traces, streams). */
+    .stream, .trace-steps, .tbl-scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+    .stream::-webkit-scrollbar, .trace-steps::-webkit-scrollbar, .tbl-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .stream::-webkit-scrollbar-thumb, .trace-steps::-webkit-scrollbar-thumb, .tbl-scroll::-webkit-scrollbar-thumb {
+      background: var(--border-strong); border-radius: 99px; }
+    .stream::-webkit-scrollbar-track, .trace-steps::-webkit-scrollbar-track, .tbl-scroll::-webkit-scrollbar-track { background: transparent; }
 
     /* ---- Top bar -------------------------------------------------------- */
     .topbar {
@@ -1143,7 +1149,7 @@
     if (sparkSamples.length < 2) return;
     var maxR = Math.max(1, sparkSamples[sparkSamples.length - 1].r);
     var maxT = Math.max(1, sparkSamples[sparkSamples.length - 1].t);
-    var sig = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim() || '#8a93f8';
+    var sig = getComputedStyle(document.documentElement).getPropertyValue('--signal').trim() || '#e8924a';
     ctx.beginPath();
     sparkSamples.forEach(function (p, i) {
       var x = (p.t / maxT) * (w - 4) + 2;
