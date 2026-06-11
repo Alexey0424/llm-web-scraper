@@ -206,8 +206,12 @@ class DiscoveryCrawler:
         frontier = Frontier()
         frontier.push(seed_url, score=1.0, depth=0)
         result = CrawlResult(intent=self.intent)
-        if self.use_sitemap:
-            self._seed_from_sitemap(seed_url, frontier, result)
+        # Sitemap seeding is deferred until AFTER the first successful page
+        # fetch: the crawler's first contact with a site must be the URL the
+        # user gave (a natural visit), not a /sitemap.xml probe — anti-bot
+        # systems flag the probe-first pattern, and if the seed is blocked
+        # there is no point poking the site further.
+        sitemap_pending = self.use_sitemap
         fetched = 0
         blocked = 0
         errors = 0
@@ -396,6 +400,13 @@ class DiscoveryCrawler:
                         if extra:
                             log.info("crawl re-proposed %d URL(s) for uncovered %s: %s",
                                      len(extra), missing, ", ".join(extra[:6]))
+
+            # First page fetched fine and fully processed -> now (and only now)
+            # consult the sitemap. Page-link pattern detection ran first, so a
+            # sitemap-induced pattern only fills the gap when links taught nothing.
+            if sitemap_pending:
+                sitemap_pending = False
+                self._seed_from_sitemap(seed_url, frontier, result)
 
         result.stats = {
             "seed": seed_url,

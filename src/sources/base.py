@@ -36,6 +36,23 @@ class FetchResult:
     reason: str = ""
 
 
+class FetchHTTPError(RuntimeError):
+    """An HTTP error status from the target site, carrying the status code."""
+
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__(f"HTTP {status}")
+
+
+def _retryable(exc: BaseException) -> bool:
+    """Only transient failures are worth a retry. A 4xx (403/404/429/...) will
+    answer the same way to the same fingerprint — and re-hitting an anti-bot
+    403 in quick succession reads as hammering and worsens IP reputation."""
+    if isinstance(exc, FetchHTTPError):
+        return exc.status >= 500
+    return True
+
+
 BLOCKED_PAGE_MARKERS = (
     "access to this page has been denied",
     "verify you are a human",
@@ -201,7 +218,8 @@ class BaseFetcher:
 
         self.limiter.wait(url)
 
-        @with_retry(max_retries=self.max_retries, base=self.backoff)
+        @with_retry(max_retries=self.max_retries, base=self.backoff,
+                    should_retry=_retryable)
         def _do() -> tuple[int, str]:
             return self._raw_get(url)
 
@@ -345,7 +363,7 @@ class ScraplingFetcher(BaseFetcher):
         text = scrapling_response_to_html(page)
 
         if status >= 400:
-            raise RuntimeError(f"HTTP {status}")
+            raise FetchHTTPError(status)
 
         return status, text
 
