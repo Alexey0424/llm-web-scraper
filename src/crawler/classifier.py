@@ -232,8 +232,13 @@ class PageClassifier:
         heuristic_hit = contact_signal >= 3
         # An individual detail page often carries a single schema.org record with
         # the contact fields -- treat that as a data page worth extracting.
+        # Sitewide markup must not count: a publisher Organization or breadcrumb
+        # (with the office phone) appears on EVERY page and would turn the whole
+        # site into "data pages". Person-like and neutral types (LocalBusiness is
+        # how e.g. Zillow marks up individual agents) still qualify.
         ld = extract_jsonld_fields(html)
-        ld_record = bool(ld.get("name") and (ld.get("telephone") or ld.get("email")))
+        ld_record = bool(ld.get("name") and (ld.get("telephone") or ld.get("email"))
+                         and ld.get("_name_type", "other") in ("person", "other"))
         heuristic_hit = heuristic_hit or ld_record
 
         if self.client is None:

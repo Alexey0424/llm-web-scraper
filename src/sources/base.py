@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
@@ -48,20 +49,40 @@ BLOCKED_PAGE_MARKERS = (
 )
 
 
+# Markup that must be removed before scanning for block markers: virtually
+# every form page embeds reCAPTCHA *assets* (script src, g-recaptcha divs,
+# "protected by reCAPTCHA" badges) without being a challenge page.
+_BLOCK_STRIP_RE = re.compile(r"(?is)<(script|style|noscript|template)\b.*?</\1\s*>")
+_HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
+_ANY_TAG_RE = re.compile(r"(?s)<[^>]+>")
+_BENIGN_PHRASES = ("protected by recaptcha",)
+
+
 def detect_blocked_page(html: str) -> Optional[str]:
     """
     Return a specific reason if the fetched HTML looks like an inaccessible,
     blocked, CAPTCHA, or anti-automation page.
+
+    Only the page's *visible text* is scanned (scripts/styles/tags stripped) so
+    that reCAPTCHA assets on a normal page don't get the page silently dropped
+    as "blocked". Challenge pages state the block in their visible text, and
+    they lead with it, so only the head of the text is checked.
 
     This does not try to bypass the block. It only reports it clearly.
     """
     if not html:
         return "empty response"
 
-    text = html[:100_000].lower()
+    text = _BLOCK_STRIP_RE.sub(" ", html[:200_000])
+    text = _HTML_COMMENT_RE.sub(" ", text)
+    text = _ANY_TAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).lower()
+    for phrase in _BENIGN_PHRASES:
+        text = text.replace(phrase, " ")
+    head = text[:4000]
 
     for marker in BLOCKED_PAGE_MARKERS:
-        if marker in text:
+        if marker in head:
             return f"blocked page detected: {marker!r}"
 
     return None

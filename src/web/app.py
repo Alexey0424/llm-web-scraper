@@ -11,6 +11,8 @@ In Docker:     exposed on port 5000 (see docker-compose.yml)
 
 from __future__ import annotations
 
+import calendar
+import copy
 import json
 import threading
 import time
@@ -58,6 +60,16 @@ _crawl: dict = {
 
 def _now() -> float:
     return time.time()
+
+
+def _iso_to_epoch(s: str | None) -> float | None:
+    """Parse the store's UTC ISO stamps ('%Y-%m-%dT%H:%M:%SZ') to epoch seconds."""
+    if not s:
+        return None
+    try:
+        return float(calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ")))
+    except (ValueError, TypeError):
+        return None
 
 
 def _error_detail(exc: Exception) -> tuple[str, dict | None]:
@@ -265,8 +277,10 @@ def _run_batch_job(jobs: list[dict], combine: str, states: list[str], max_pages:
                 ejected = True  # ejected mid-operation (that op kept its partial rows)
 
         export_path, removed = _build_batch_export(store, batch_id, combine)
-        done = sum(1 for j in _crawl["batch"]["jobs"] if j["state"] == "done")
-        total_recs = sum(j.get("records", 0) for j in _crawl["batch"]["jobs"])
+        with _crawl_lock:
+            jobs_snapshot = [dict(j) for j in _crawl["batch"]["jobs"]]
+        done = sum(1 for j in jobs_snapshot if j["state"] == "done")
+        total_recs = sum(j.get("records", 0) for j in jobs_snapshot)
         dup_note = (f" {removed} cross-site duplicate(s) removed." if removed else "")
         if ejected:
             msg = (f"Batch ejected by you — {done}/{total} operation(s) done, "
@@ -325,11 +339,31 @@ def create_app() -> Flask:
                 ff_stats = json.loads(ff_run.get("stats_json") or "{}")
                 # Flag rows already present in a previous EXPORT file (exports are
                 # the source of truth for "already saved"). Deterministic key match.
+                # Only exports that PREDATE this run count: every crawl auto-writes
+                # its own export, so without the cutoff a run would be flagged
+                # "already saved" against its own file (100% of rows, always).
                 from ..crawler import dedup
                 ledger = dedup.build_export_ledger(EXPORTS_DIR)
                 if ledger:
+                    cutoff = _iso_to_epoch(ff_run.get("started"))
+                    mtimes: dict[str, float | None] = {}
+
+                    def _prior(files: list[str]) -> list[str]:
+                        if cutoff is None:
+                            return files
+                        out = []
+                        for f in files:
+                            if f not in mtimes:
+                                try:
+                                    mtimes[f] = (EXPORTS_DIR / f).stat().st_mtime
+                                except OSError:
+                                    mtimes[f] = None
+                            if mtimes[f] is not None and mtimes[f] < cutoff:
+                                out.append(f)
+                        return out
+
                     for row in ff_rows:
-                        files = ledger.get(dedup.record_key(row) or "\0", [])
+                        files = _prior(ledger.get(dedup.record_key(row) or "\0", []))
                         if files:
                             row["__seen_in__"] = files
                             seen_count += 1
@@ -477,8 +511,9 @@ def create_app() -> Flask:
     @app.route("/crawl-status")
     def crawl_status():
         with _crawl_lock:
-            job = dict(_crawl)
-            job["events"] = list(_crawl["events"])
+            # Deep copy: the nested batch/jobs dicts keep being mutated by the
+            # worker thread, and jsonify serializes after the lock is released.
+            job = copy.deepcopy(_crawl)
         return jsonify(job)
 
     @app.route("/crawl-stop", methods=["POST"])
@@ -540,9 +575,21 @@ def create_app() -> Flask:
                         pass
         return n
 
+    def _refuse_if_running():
+        """Destructive routes must not run mid-crawl: the worker holds its own
+        store handle and run_id, so deleting under it silently orphans records."""
+        with _crawl_lock:
+            if _crawl["state"] == "running":
+                return jsonify(ok=False, error="A crawl is running — eject it or "
+                               "wait for it to finish before deleting data."), 409
+        return None
+
     @app.route("/reset", methods=["POST"])
     def reset():
         """Nuke everything: crawl history + records (DB) and the export files."""
+        refused = _refuse_if_running()
+        if refused:
+            return refused
         ff = _ff_store()
         try:
             ff.reset()
@@ -558,6 +605,9 @@ def create_app() -> Flask:
     @app.route("/clear-history", methods=["POST"])
     def clear_history():
         """Delete all crawl runs + records, but keep the exported files."""
+        refused = _refuse_if_running()
+        if refused:
+            return refused
         ff = _ff_store()
         try:
             ff.reset()
@@ -567,6 +617,9 @@ def create_app() -> Flask:
 
     @app.route("/delete-run/<int:run_id>", methods=["POST"])
     def delete_run(run_id: int):
+        refused = _refuse_if_running()
+        if refused:
+            return refused
         ff = _ff_store()
         try:
             if not ff.get_run(run_id):

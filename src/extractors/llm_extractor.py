@@ -8,13 +8,21 @@ crawler extractor (``src/crawler/freeform.py``).
 
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
+log = logging.getLogger(__name__)
 
-def html_to_signal_text(html: str, *, limit: int = 12000) -> str:
+# Sized so the free-form extractor's chunking (4 chunks x 6000 chars, 400
+# overlap) is fed rather than starved: a 12k cap silently dropped the back
+# half of large rosters before the LLM ever saw them.
+DEFAULT_TEXT_LIMIT = 24000
+
+
+def html_to_signal_text(html: str, *, limit: int = DEFAULT_TEXT_LIMIT) -> str:
     """Reduce HTML to text, inlining mailto/tel hrefs so the LLM can see them.
 
     Uses BeautifulSoup specifically because it *mutates* the DOM in document order
@@ -32,8 +40,11 @@ def html_to_signal_text(html: str, *, limit: int = 12000) -> str:
             a.append(f" [email: {unquote(href[7:].split('?')[0])}]")
         elif href.lower().startswith("tel:"):
             a.append(f" [phone: {href[4:]}]")
-    text = soup.get_text(" ", strip=True)
-    return re.sub(r"\s{2,}", " ", text)[:limit]
+    text = re.sub(r"\s{2,}", " ", soup.get_text(" ", strip=True))
+    if len(text) > limit:
+        log.info("html_to_signal_text: page text truncated %d -> %d chars",
+                 len(text), limit)
+    return text[:limit]
 
 
 def _chunks(text: str, size: int = 6000, overlap: int = 400) -> list[str]:

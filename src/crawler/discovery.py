@@ -366,14 +366,19 @@ def diagnose(result: CrawlResult) -> str:
         return f"Found {found} data page(s)."
 
     notes = [(v.get("status"), (v.get("note") or "")) for v in result.visited]
-    robots = sum(1 for st, n in notes if st == "blocked")
+    # "blocked" covers two distinct causes -- robots.txt denial vs an anti-bot
+    # block/CAPTCHA page -- and the user needs to know which one stopped them.
+    robots = sum(1 for st, n in notes if st == "blocked" and "robots" in n.lower())
+    antibot = sum(1 for st, n in notes if st == "blocked" and "robots" not in n.lower())
     forbidden = sum(1 for st, n in notes if "403" in n or "forbidden" in n.lower())
     timeouts = sum(1 for st, n in notes
                    if st == "error" and ("timeout" in n.lower() or "timed out" in n.lower()))
     reasons: list[str] = []
     if robots:
-        reasons.append(f"{robots} URL(s) were disallowed by the site's robots.txt "
-                       "(the crawler obeys robots.txt and never bypasses it)")
+        reasons.append(f"{robots} URL(s) were disallowed by the site's robots.txt")
+    if antibot:
+        reasons.append(f"{antibot} page(s) answered with an anti-bot/CAPTCHA block "
+                       "page, which this tool does not bypass")
     if forbidden:
         reasons.append("the site returned 403 Forbidden — almost always anti-bot "
                        "protection, which this tool does not bypass")

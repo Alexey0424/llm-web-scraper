@@ -90,9 +90,25 @@ class OllamaClient:
             return False
         if self.model in tags:
             return True
-        # Accept a bare family match (e.g. "gemma4:26b" vs "gemma4:26b-instruct").
+        # Family match (e.g. OLLAMA_MODEL=gemma4:e4b but only gemma4:26b pulled).
+        # Ollama needs the exact tag, so chat calls against the configured name
+        # would 404 on every page and the crawl would silently degrade to
+        # heuristics. With exactly one installed variant, adopt it (loudly);
+        # otherwise report unavailable instead of letting every call fail.
         base = self.model.split(":")[0]
-        return any(t.split(":")[0] == base for t in tags)
+        fam = sorted(t for t in tags if t.split(":")[0] == base)
+        if len(fam) == 1:
+            log.warning("Ollama model %r not installed at %s; using same-family "
+                        "%r instead. Set OLLAMA_MODEL to an installed tag to "
+                        "silence this.", self.model, self.host, fam[0])
+            self.model = fam[0]
+            return True
+        if fam:
+            log.warning("Ollama model %r not installed at %s (family variants "
+                        "present: %s). Treating the LLM as unavailable -- set "
+                        "OLLAMA_MODEL to one of the installed tags.",
+                        self.model, self.host, ", ".join(fam))
+        return False
 
     # -- core calls ----------------------------------------------------------
     def chat_json(
