@@ -52,6 +52,11 @@ DETAIL_LINK_SCORE = 1.7
 # before exploring, but individual record pages still come first.
 NEXT_PAGE_SCORE = 1.6
 
+# Stop the crawl after this many fetch failures in a row: a site answering
+# 403/blocked to everything will not change its mind, and each further hit
+# reads as hammering to anti-bot systems (worsening IP reputation).
+CONSECUTIVE_FAILURE_LIMIT = 6
+
 # Anchor texts that mean "the next page of this listing".
 _NEXT_TEXT_RE = re.compile(
     r"^\s*(next(\s+page)?|more|older(\s+posts)?|siguiente|›|»|>|→)\s*[›»>→]*\s*$",
@@ -206,11 +211,11 @@ class DiscoveryCrawler:
         frontier = Frontier()
         frontier.push(seed_url, score=1.0, depth=0)
         result = CrawlResult(intent=self.intent)
-        # Sitemap seeding is deferred until AFTER the first successful page
-        # fetch: the crawler's first contact with a site must be the URL the
-        # user gave (a natural visit), not a /sitemap.xml probe — anti-bot
-        # systems flag the probe-first pattern, and if the seed is blocked
-        # there is no point poking the site further.
+        # The sitemap is a RESCUE, not a routine probe: it is consulted only
+        # when link-walking drains the frontier without finding any data page
+        # (and only if the site let us fetch something at all). A crawl whose
+        # links already work makes zero non-page requests — on anti-bot-
+        # protected sites every extra probe risks tripping the block.
         sitemap_pending = self.use_sitemap
         fetched = 0
         blocked = 0
@@ -223,10 +228,18 @@ class DiscoveryCrawler:
         steer_segs = self.intent.segments or self.intent.states
 
         ejected = False
-        while len(frontier) and fetched < self.max_pages:
+        stopped_early = None
+        consec_fail = 0
+        while fetched < self.max_pages:
             if self.should_stop is not None and self.should_stop():
                 ejected = True
                 log.info("crawl ejected by user after %d page(s)", fetched)
+                break
+            if not len(frontier):
+                if sitemap_pending and fetched > 0 and not result.data_pages:
+                    sitemap_pending = False
+                    self._seed_from_sitemap(seed_url, frontier, result)
+                    continue
                 break
             item = frontier.pop()
             if item is None:
@@ -260,8 +273,16 @@ class DiscoveryCrawler:
                 self._emit(kind="visit", seconds=secs, url=item.url, status=status,
                            note=res.reason[:120], fetched=fetched,
                            data_pages=len(result.data_pages))
+                consec_fail += 1
+                if consec_fail >= CONSECUTIVE_FAILURE_LIMIT:
+                    stopped_early = "consecutive_failures"
+                    log.warning("crawl stopped: %d consecutive fetch failures — "
+                                "the site appears to be blocking; continuing "
+                                "would only hammer it", consec_fail)
+                    break
                 continue
             fetched += 1
+            consec_fail = 0
 
             verdict = self.pages.classify(item.url, res.content, self.intent)
             is_data = verdict.is_data_page
@@ -401,13 +422,6 @@ class DiscoveryCrawler:
                             log.info("crawl re-proposed %d URL(s) for uncovered %s: %s",
                                      len(extra), missing, ", ".join(extra[:6]))
 
-            # First page fetched fine and fully processed -> now (and only now)
-            # consult the sitemap. Page-link pattern detection ran first, so a
-            # sitemap-induced pattern only fills the gap when links taught nothing.
-            if sitemap_pending:
-                sitemap_pending = False
-                self._seed_from_sitemap(seed_url, frontier, result)
-
         result.stats = {
             "seed": seed_url,
             "pages_fetched": fetched,
@@ -420,6 +434,7 @@ class DiscoveryCrawler:
             "engine": self.fetcher.engine,
             "model": self.client.model if self.client else None,
             "ejected": ejected,
+            "stopped_early": stopped_early,
         }
         log.info("crawl done: fetched=%d data_pages=%d blocked=%d errors=%d llm_calls=%d",
                  fetched, len(result.data_pages), blocked, errors, result.stats["llm_calls"])
@@ -526,5 +541,9 @@ def diagnose(result: CrawlResult) -> str:
             reasons.append("nothing was fetched — the seed URL may be wrong or unreachable")
         else:
             reasons.append("no pages matching your request were found")
+    if s.get("stopped_early") == "consecutive_failures":
+        reasons.append("the crawl stopped early after several consecutive "
+                       "failures, to avoid hammering a site that is blocking "
+                       "(try again later — repeated attempts make the block worse)")
     msg = "; ".join(reasons) + "."
     return msg[0].upper() + msg[1:]

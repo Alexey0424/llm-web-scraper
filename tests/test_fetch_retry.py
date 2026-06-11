@@ -107,3 +107,41 @@ def test_sitemap_skipped_when_seed_is_blocked():
     intent = Planner(client=None).plan("collect people", "https://x.test/")
     DiscoveryCrawler(intent, client=None, fetcher=f, max_pages=5).run("https://x.test/")
     assert "/sitemap.xml" not in f.order  # don't poke a site that just blocked us
+
+
+_LD = ('<script type="application/ld+json">'
+       '{"@type": "Person", "name": "Jane %s", "telephone": "973-555-010%d"}'
+       "</script>")
+
+
+def test_sitemap_not_probed_when_links_already_find_records():
+    # Link-walking succeeds -> the sitemap is never consulted at all (it is a
+    # RESCUE for link-starved crawls, not a routine probe; every extra
+    # non-page request risks tripping anti-bot scoring on protected sites).
+    pages = {
+        "/": ('<html><body><a href="/profile/a">a</a><a href="/profile/b">b</a>'
+              '<a href="/profile/c">c</a></body></html>'),
+        "/sitemap.xml": '<?xml version="1.0"?><urlset></urlset>',
+    }
+    for i, p in enumerate(("a", "b", "c")):
+        pages[f"/profile/{p}"] = (f"<html><head>{_LD % (p, i)}</head>"
+                                  "<body><h1>profile</h1></body></html>")
+    f = TraceFetcher(pages)
+    intent = Planner(client=None).plan("collect people", "https://x.test/")
+    result = DiscoveryCrawler(intent, client=None, fetcher=f,
+                              max_pages=10).run("https://x.test/")
+    assert result.data_pages
+    assert "/sitemap.xml" not in f.order
+
+
+def test_crawl_stops_after_consecutive_blocked_fetches():
+    # Once a site starts answering 403 to everything, continuing just hammers
+    # the anti-bot and worsens IP reputation: stop after a few in a row.
+    links = "".join(f'<a href="/profile/p{i}">person {i}</a>' for i in range(12))
+    f = TraceFetcher({"/": f"<html><body>{links}</body></html>"})  # profiles all 403
+    intent = Planner(client=None).plan("collect people", "https://x.test/")
+    result = DiscoveryCrawler(intent, client=None, fetcher=f,
+                              max_pages=30).run("https://x.test/")
+    failures = [v for v in result.visited if v["status"] in ("error", "blocked")]
+    assert len(failures) <= 6
+    assert result.stats.get("stopped_early") == "consecutive_failures"
