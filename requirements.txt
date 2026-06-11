@@ -8,12 +8,13 @@ lxml>=5.0
 # Parsing (optional fast path; bs4 is the fallback used in tests)
 selectolax>=0.3.21
 
-# Scrapling with its `fetchers` extra — required so the non-stealth Fetcher engine
-# imports (pulls curl_cffi, browserforge, msgspec, protego, playwright, ...).
-# We use the plain Fetcher only; StealthyFetcher / browser stealth are NOT used.
+# Scrapling with its `fetchers` extra — provides all three fetch engines used by
+# sources/base.py (Fetcher, DynamicFetcher, StealthyFetcher; pulls curl_cffi,
+# browserforge, msgspec, protego, playwright, ...). The default SCRAPER_MODE is
+# "stealth" (StealthyFetcher); "fast" and "dynamic" are selectable via env.
 scrapling[fetchers]>=0.4
 
-# Browser rendering for JS-only sources (vanilla, no stealth). Optional at runtime.
+# Browser rendering (used by Scrapling's dynamic/stealth fetch modes).
 playwright>=1.44
 
 # Web UI

@@ -1,5 +1,12 @@
 # Plan
 
+> **Partially superseded (2026-06-11):** the fetch-policy statements below
+> ("compliance-gated", "robots-gated, no bypass, plain httpx, no stealth") date
+> from the original posture and **no longer match the code**. Since the
+> 2026-06-04 "Vanilla baseline" the fetcher is Scrapling (stealth default) and
+> the robots gate is off — see `LEGALITY_OF_THE_CRAWL.md` for the current
+> account. The pipeline structure described here is still accurate.
+
 The project is a **local-LLM discovery crawler** (the original fixed-schema
 real-estate scraping pipeline was removed on 2026-06-04 — only the crawler remains).
 

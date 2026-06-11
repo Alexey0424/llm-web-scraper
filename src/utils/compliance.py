@@ -1,9 +1,15 @@
-"""Compliance gate.
+"""Fetch gate — currently "Direct Mode" (robots.txt NOT checked).
 
-This module encodes the project's firm boundary: **we never bypass access
-controls.** No CAPTCHA solving, no Cloudflare/Turnstile defeat, no fingerprint
-spoofing, no login/paywall circumvention. A source declared ``requires_bypass``
-in sources.yaml is always skipped, and every fetch is checked against robots.txt.
+Originally this module enforced a strict boundary (every fetch checked against
+robots.txt via ``utils.robots``). The project owner switched it to Direct Mode
+in the 2026-06-04 "Vanilla baseline": ``gate_url`` only validates the URL scheme
+and allows everything else, so any pasted URL is fetched. ``utils/robots.py``
+still works and can be wired back in here to restore robots enforcement (see
+LEGALITY_OF_THE_CRAWL.md §2).
+
+What still holds elsewhere in the fetch path: per-domain rate limiting, bounded
+retries, same-domain scope, and block/CAPTCHA pages being detected and reported
+(``sources.base.detect_blocked_page``) rather than solved.
 """
 
 # compliance.py
@@ -20,13 +26,10 @@ def gate_source(source_cfg: dict = None) -> GateResult:
     return GateResult(True, "Direct Mode: All sources allowed.")
 
 def gate_url(url: str, user_agent: str) -> GateResult:
-    """
-    Minimalist check. 
-    We skip robots.txt to ensure we get data from any URL pasted.
-    """
+    """Scheme check only — robots.txt is deliberately skipped (Direct Mode),
+    so data can be fetched from any URL the user pastes."""
     if not url.startswith(("http://", "https://")):
         return GateResult(False, f"Invalid URL scheme: {url}")
-    
-    # We return True immediately to bypass all-robot/all-compliance checks
+
     return GateResult(True, "Direct Mode: Bypassing robots.txt")
 

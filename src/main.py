@@ -2,7 +2,9 @@
 
 The single command is ``crawl`` (see cli.py): LLM-guided, free-form discovery —
 given a seed URL + a natural-language prompt, plan an intent, crawl the site
-(compliance-gated), and extract the prompt's fields into a dynamic Excel/CSV/JSONL.
+(rate-limited, same-domain, Scrapling browser fetch; robots gate currently off —
+see utils/compliance.py), and extract the prompt's fields into a dynamic
+Excel/CSV/JSONL.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ def crawl(
     """Free-form discovery + extraction (FetchFox-style).
 
     Pipeline: plan intent (LLM) -> columns derived from the prompt -> best-first
-    crawl (compliance-gated) -> discovered data-page URLs -> LLM extracts exactly
+    crawl (rate-limited, same-domain) -> discovered data-page URLs -> LLM extracts exactly
     the requested fields per page -> dedupe/store -> dynamic Excel/CSV/JSONL whose
     columns match the prompt. There is no fixed template; the prompt decides the
     columns. ``store`` is an optional ``FreeFormStore`` (the UI passes one).
@@ -91,7 +93,7 @@ def crawl(
                   "max_visits": ("∞ (until target)" if target else max_pages),
                   "max_extracts": (f"until {target} records" if target else max_extracts),
                   "max_depth": max_depth, "target_records": target,
-                  "model": client.model, "proxy": "none (compliant)"})
+                  "model": client.model, "proxy": "none"})
 
     # Generic "target segments" (the entity-agnostic generalization of states):
     # the distinct values the user wants results spread across. When present, the

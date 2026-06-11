@@ -109,8 +109,8 @@ class LinkClassifier:
         (e.g. other cities/locations) that aren't linked here. To raise the odds
         every target location is reached, it asks for SEVERAL major localities per
         location. Same-domain-filtered and bounded; whatever is enqueued still
-        passes the normal compliance gate and page classifier, so wrong guesses
-        (404s, off-target) are dropped.
+        goes through the normal rate-limited fetch and page classifier, so wrong
+        guesses (404s, off-target) are dropped.
         """
         if self.client is None:
             return []

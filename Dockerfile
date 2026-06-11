@@ -21,9 +21,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Install a Chromium for Playwright + Scrapling's fetcher (vanilla, no stealth).
-# Tolerate failure so the image still builds in restricted networks; the
-# httpx/bs4 static path does not require a browser.
+# Install the browsers Scrapling's fetch engines need: Playwright Chromium for
+# DynamicFetcher, plus the browser set `scrapling install` provides for
+# StealthyFetcher (the default SCRAPER_MODE).
 RUN playwright install --with-deps chromium && \
     scrapling install
 

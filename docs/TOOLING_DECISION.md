@@ -1,10 +1,13 @@
 # Tooling Decision
 
-> **Note (2026-06-04):** the original fixed-schema scraping pipeline was removed;
-> only the LLM discovery crawler remains. The decision below — **Scrapling with
-> stealth/anti-bot OFF, no bypass** — still governs the crawler (Scrapling is used
-> as the HTML parser; fetching is plain `httpx`). The pipeline specifics mentioned
-> further down are historical.
+> **SUPERSEDED (2026-06-11).** This document records the original decision —
+> Scrapling with stealth OFF, plain `httpx` fetching, robots obeyed. **The
+> project owner reversed that decision in the 2026-06-04 "Vanilla baseline":**
+> the fetcher is now `ScraplingFetcher` with `stealth` as the default mode
+> (`src/sources/base.py`, `SCRAPER_MODE` env var) and the robots gate is off
+> ("Direct Mode", `src/utils/compliance.py`). Scrapling remains the HTML parser
+> as described. Kept for history; the current account is in
+> `LEGALITY_OF_THE_CRAWL.md`.
 
 ## Summary
 

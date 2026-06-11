@@ -2,8 +2,9 @@
 
 A polite, same-domain best-first search seeded from one URL. Each pop:
 
-1. fetch via the project's compliance-gated fetcher (robots + no-bypass + rate
-   limit + retry are all inherited -- the crawler adds no new network policy);
+1. fetch via the project's shared fetcher (Scrapling browser fetch; per-domain
+   rate limit + bounded retry + block-page detection are all inherited -- the
+   crawler adds no new network policy; robots gate currently off, Direct Mode);
 2. classify the page -- if it lists the target entity, record it as a
    *discovered data page*;
 3. extract same-site links, score them, and enqueue for later depth.

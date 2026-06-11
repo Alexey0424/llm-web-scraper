@@ -1,8 +1,10 @@
 """robots.txt fetching and evaluation.
 
-We *honor* robots.txt. If a path is disallowed for our user-agent, we do not
-fetch it. Network failures fetching robots.txt are treated conservatively
-(default: allow only the root, but callers decide via ``on_error``).
+CURRENTLY UNUSED: since the 2026-06-04 "Direct Mode" change, ``compliance.gate_url``
+no longer calls this module, so robots.txt is not enforced anywhere. The module
+is kept working so the gate can be wired back in (see LEGALITY_OF_THE_CRAWL.md
+§2). When wired in: if a path is disallowed for our user-agent, we do not fetch
+it; network failures fetching robots.txt are treated as "no robots file".
 """
 
 from __future__ import annotations

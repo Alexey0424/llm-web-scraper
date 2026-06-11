@@ -141,7 +141,7 @@ class BaseFetcher:
     Shared fetcher logic.
 
     This class handles:
-    - compliance checks
+    - the URL gate (Direct Mode: scheme check only; robots.txt currently off)
     - per-domain rate limiting
     - retries
     - blocked-page detection
