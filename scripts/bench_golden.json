@@ -1,0 +1,98 @@
+[
+  {
+    "name": "brokerage_static",
+    "fixture": "tests/fixtures/brokerage_static.html",
+    "entity": "real estate agent",
+    "base_url": "https://example-brokerage.test/our-agents",
+    "columns": [
+      ["Full Name", "full_name"], ["First Name", "first_name"],
+      ["Last Name", "last_name"], ["Email", "email"], ["Phone", "phone"],
+      ["Agency", "agency"], ["City", "city"], ["Source URL", "source_url"]
+    ],
+    "golden": [
+      {"full_name": "Aaron Hazel", "first_name": "Aaron", "last_name": "Hazel",
+       "email": "aaron.hazel@talktotucker.com", "phone": "317-796-2689",
+       "agency": "F.C. Tucker Company - West", "city": "Indianapolis"},
+      {"full_name": "Adam Hopkins", "first_name": "Adam", "last_name": "Hopkins",
+       "email": "adam@icongrouprealtors.com", "phone": "317-418-1743",
+       "agency": "eXp Realty, LLC", "city": "Westfield"},
+      {"full_name": "No Email Person", "first_name": "No Email", "last_name": "Person",
+       "email": null, "phone": null, "agency": "Some Realty", "city": "Fishers"}
+    ]
+  },
+  {
+    "name": "roster_page1",
+    "fixture": "tests/fixtures/crawl_site/our-agents.html",
+    "entity": "real estate agent",
+    "base_url": "https://greenfield-realty.test/our-agents.html",
+    "columns": [
+      ["Full Name", "full_name"], ["First Name", "first_name"],
+      ["Last Name", "last_name"], ["Email", "email"], ["Phone", "phone"],
+      ["Agency", "agency"], ["City", "city"], ["Source URL", "source_url"]
+    ],
+    "golden": [
+      {"full_name": "Maria Gonzalez", "first_name": "Maria", "last_name": "Gonzalez",
+       "email": "maria.gonzalez@greenfieldrealty.com", "phone": "973-555-0101",
+       "agency": "Greenfield Realty", "city": "Newark"},
+      {"full_name": "David Chen", "first_name": "David", "last_name": "Chen",
+       "email": "david.chen@greenfieldrealty.com", "phone": "973-555-0102",
+       "agency": "Greenfield Realty", "city": "Jersey City"},
+      {"full_name": "Priya Patel", "first_name": "Priya", "last_name": "Patel",
+       "email": "priya.patel@greenfieldrealty.com", "phone": "973-555-0103",
+       "agency": "Greenfield Realty", "city": "Edison"}
+    ]
+  },
+  {
+    "name": "roster_page2",
+    "fixture": "tests/fixtures/crawl_site/our-agents-2.html",
+    "entity": "real estate agent",
+    "base_url": "https://greenfield-realty.test/our-agents-2.html",
+    "columns": [
+      ["Full Name", "full_name"], ["First Name", "first_name"],
+      ["Last Name", "last_name"], ["Email", "email"], ["Phone", "phone"],
+      ["Agency", "agency"], ["City", "city"], ["Source URL", "source_url"]
+    ],
+    "golden": [
+      {"full_name": "James O'Brien", "first_name": "James", "last_name": "O'Brien",
+       "email": "james.obrien@greenfieldrealty.com", "phone": "973-555-0104",
+       "agency": "Greenfield Realty", "city": "Trenton"},
+      {"full_name": "Sarah Williams", "first_name": "Sarah", "last_name": "Williams",
+       "email": "sarah.williams@greenfieldrealty.com", "phone": "973-555-0105",
+       "agency": "Greenfield Realty", "city": "Princeton"}
+    ]
+  },
+  {
+    "name": "jsonld_detail",
+    "fixture": "tests/fixtures/brokerage_jsonld.html",
+    "entity": "real estate agent",
+    "base_url": "https://howard-hanna.test/agents/jane-broker",
+    "columns": [
+      ["Full Name", "full_name"], ["First Name", "first_name"],
+      ["Last Name", "last_name"], ["Email", "email"], ["Phone", "phone"],
+      ["Agency", "agency"], ["City", "city"], ["State", "state"],
+      ["Source URL", "source_url"]
+    ],
+    "golden": [
+      {"full_name": "Jane Broker", "first_name": "Jane", "last_name": "Broker",
+       "email": "jane.broker@howardhanna.com", "phone": "412-555-0100",
+       "agency": "Howard Hanna", "city": "Pittsburgh", "state": "PA"}
+    ]
+  },
+  {
+    "name": "zillow_profile",
+    "fixture": "tests/fixtures/zillow_profile.html",
+    "entity": "real estate agent",
+    "base_url": "https://www.zillow.com/profile/Dana%20Rae%20Moreno",
+    "columns": [
+      ["Full Name", "full_name"], ["First Name", "first_name"],
+      ["Last Name", "last_name"], ["Email", "email"], ["Phone", "phone"],
+      ["Agency", "agency"], ["City", "city"], ["State", "state"],
+      ["Source URL", "source_url"]
+    ],
+    "golden": [
+      {"full_name": "Dana Rae Moreno", "first_name": "Dana", "last_name": "Rae Moreno",
+       "email": "dana.moreno@compass.com", "phone": "609-555-0143",
+       "agency": "Compass", "city": "Princeton", "state": "NJ"}
+    ]
+  }
+]

@@ -19,16 +19,19 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from ..sources.base import HttpFetcher, make_fetcher
 from ..utils.provenance import now_iso
-from .classifier import LinkClassifier, PageClassifier
-from .frontier import Frontier, extract_links
+from .classifier import LinkClassifier, PageClassifier, _kw_score
+from .frontier import Frontier, Link, extract_links, normalize_url, same_site
+from .parsing import extract_rel_next
 from .intent import CrawlIntent
 from .llm import OllamaClient
+from .sitemap import fetch_sitemap_urls
 from .urlpattern import matches_pattern
 
 log = logging.getLogger(__name__)
@@ -43,6 +46,39 @@ PROPOSED_URL_SCORE = 1.5
 # anything else -- they are what the user ultimately wants, and they're found by
 # URL shape, not anchor keywords (a name anchor would otherwise score ~0).
 DETAIL_LINK_SCORE = 1.7
+
+# Priority for the "next page" of a CONFIRMED data/hub page (a multi-page
+# roster). Just under DETAIL_LINK_SCORE: keep extracting known-good rosters
+# before exploring, but individual record pages still come first.
+NEXT_PAGE_SCORE = 1.6
+
+# Anchor texts that mean "the next page of this listing".
+_NEXT_TEXT_RE = re.compile(
+    r"^\s*(next(\s+page)?|more|older(\s+posts)?|siguiente|›|»|>|→)\s*[›»>→]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def pagination_links(html: str, base_url: str, links: list[Link]) -> list[str]:
+    """Next-page URLs of this page: ``rel=next`` + "Next ›"-style anchors.
+
+    URL-shape-agnostic on purpose — real pagination often uses opaque queries
+    (?p=2) that no keyword or pattern heuristic would score. The caller decides
+    whether the page deserves following (only data/hub pages do).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for href in extract_rel_next(html):
+        u = normalize_url(urljoin(base_url, href))
+        if (u.startswith(("http://", "https://")) and same_site(base_url, u)
+                and u not in seen):
+            seen.add(u)
+            out.append(u)
+    for ln in links:
+        if _NEXT_TEXT_RE.match(ln.anchor or "") and ln.url not in seen:
+            seen.add(ln.url)
+            out.append(ln.url)
+    return out
 
 
 @dataclass
@@ -82,6 +118,7 @@ class DiscoveryCrawler:
         on_data_page=None,
         needed_segments=None,
         should_stop=None,
+        use_sitemap: bool = True,
     ):
         self.intent = intent
         self.client = client
@@ -104,11 +141,21 @@ class DiscoveryCrawler:
         # next loop iteration (the web "Eject" button). Records already extracted
         # are kept — they're stored incrementally.
         self.should_stop = should_stop
+        # Seed the frontier from /sitemap.xml (it often enumerates every record
+        # page directly); off only for tests that need a links-only crawl.
+        self.use_sitemap = use_sitemap
         self.links = LinkClassifier(client)
         self.pages = PageClassifier(client)
         # The detected individual-record URL prefix (e.g. "/profile"), learned
-        # once from the first listing page and then used to harvest detail links.
+        # from the first page with a usable link cluster and then used to
+        # harvest detail links. It must PROVE itself: if the first fetched URL
+        # matching it does not classify as a data page, it is unlearned and
+        # blacklisted so a later page can teach the real pattern (a homepage's
+        # biggest cluster is often categories/cities, not records).
         self._detail_prefix = None
+        self._detail_confirmed = False
+        self._rejected_prefixes: set[str] = set()
+        self._demoted: set[str] = set()
 
     def _emit(self, **event) -> None:
         if self.on_event:
@@ -117,10 +164,50 @@ class DiscoveryCrawler:
             except Exception:  # noqa: BLE001 - progress must never break the crawl
                 pass
 
+    def _seed_from_sitemap(self, seed_url: str, frontier: Frontier,
+                           result: CrawlResult) -> None:
+        """Queue sitemap URLs: detail-pattern matches at top priority, other
+        keyword-relevant URLs at their heuristic score. The pattern induced
+        here is unconfirmed and goes through the same first-fetch validation
+        as one learned from page links."""
+        try:
+            urls = fetch_sitemap_urls(seed_url, self.fetcher)
+        except Exception as exc:  # noqa: BLE001 - sitemap is best-effort, never fatal
+            log.warning("sitemap seeding failed for %s: %s", seed_url, exc)
+            return
+        if not urls:
+            return
+        if self._detail_prefix is None:
+            cand = self.links.detect_detail_pattern(
+                [Link(u, "") for u in urls], self.intent)
+            if cand and cand not in self._rejected_prefixes:
+                self._detail_prefix = cand
+                log.info("crawl detail-pattern from sitemap: %s", self._detail_prefix)
+        pushed = 0
+        for u in urls:
+            if self._detail_prefix and matches_pattern(u, self._detail_prefix):
+                frontier.push(u, DETAIL_LINK_SCORE, 1, "(sitemap)")
+                pushed += 1
+            else:
+                s = _kw_score(u, self.intent.include_keywords,
+                              self.intent.exclude_keywords)
+                if s > 0:
+                    frontier.push(u, s, 1, "(sitemap)")
+                    pushed += 1
+        p = urlparse(seed_url)
+        sm_url = f"{p.scheme}://{p.netloc}/sitemap.xml"
+        note = f"sitemap: queued {pushed} of {len(urls)} URL(s)"
+        result.visited.append({"url": sm_url, "status": "ok", "note": note})
+        log.info("crawl %s", note)
+        self._emit(kind="visit", url=sm_url, status="ok", note=note,
+                   fetched=0, data_pages=0)
+
     def run(self, seed_url: str) -> CrawlResult:
         frontier = Frontier()
         frontier.push(seed_url, score=1.0, depth=0)
         result = CrawlResult(intent=self.intent)
+        if self.use_sitemap:
+            self._seed_from_sitemap(seed_url, frontier, result)
         fetched = 0
         blocked = 0
         errors = 0
@@ -140,6 +227,16 @@ class DiscoveryCrawler:
             item = frontier.pop()
             if item is None:
                 break
+            # A URL queued at top priority under a since-rejected detail prefix
+            # would still drain the budget first; demote it once instead.
+            if (self._rejected_prefixes and item.url not in self._demoted
+                    and item_score(item) >= DETAIL_LINK_SCORE
+                    and any(matches_pattern(item.url, p)
+                            for p in self._rejected_prefixes)):
+                self._demoted.add(item.url)
+                frontier.visited.discard(item.url)
+                frontier.push(item.url, 0.1, item.depth, item.anchor)
+                continue
             # Balance steering: skip a URL whose segment is already full, so the
             # budget reaches under-covered segments (a skip is free -- no fetch).
             if steer_segs and self.needed_segments is not None:
@@ -172,9 +269,22 @@ class DiscoveryCrawler:
                      if item.depth < self.max_depth else [])
             scored = self.links.score_links(item.url, links, self.intent) if links else []
             if links and self._detail_prefix is None:
-                self._detail_prefix = self.links.detect_detail_pattern(links, self.intent)
-                if self._detail_prefix:
+                cand = self.links.detect_detail_pattern(links, self.intent)
+                if cand and cand not in self._rejected_prefixes:
+                    self._detail_prefix = cand
                     log.info("crawl detail-pattern detected: %s", self._detail_prefix)
+            # Validate an unconfirmed prefix against this very fetch: the first
+            # matching page decides — data page confirms it, anything else
+            # unlearns it (and re-detection may pick the next-best cluster).
+            if (self._detail_prefix and not self._detail_confirmed
+                    and matches_pattern(item.url, self._detail_prefix)):
+                if is_data:
+                    self._detail_confirmed = True
+                else:
+                    log.info("crawl detail-pattern rejected (%s not a data page): %s",
+                             item.url, self._detail_prefix)
+                    self._rejected_prefixes.add(self._detail_prefix)
+                    self._detail_prefix = None
             is_detail_page = bool(self._detail_prefix
                                   and matches_pattern(item.url, self._detail_prefix))
             has_detail_links = bool(self._detail_prefix
@@ -217,6 +327,12 @@ class DiscoveryCrawler:
                     break
 
             if item.depth < self.max_depth:
+                # A confirmed data/hub page's "next page" is more of the same
+                # records — follow it at high priority regardless of URL shape.
+                if is_data or has_detail_links:
+                    for nxt in pagination_links(res.content, item.url, links):
+                        frontier.push(nxt, NEXT_PAGE_SCORE, item.depth + 1,
+                                      "(next page)")
                 # FetchFox-style "query mode": on the seed, let the LLM propose
                 # target-location URLs that aren't linked from this page (e.g.
                 # other states), so the crawl isn't trapped wherever the seed

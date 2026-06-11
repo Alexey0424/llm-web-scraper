@@ -118,34 +118,51 @@ class OllamaClient:
         *,
         temperature: float = 0.0,
         default: Any = None,
+        schema: dict | None = None,
     ) -> Any:
-        """Chat with ``format=json`` and return the parsed JSON (or ``default``)."""
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": temperature, "num_ctx": self.num_ctx},
-        }
-        t0 = time.monotonic()
-        try:
-            self.calls += 1
-            r = self._client.post(f"{self.host}/api/chat", json=payload)
-            r.raise_for_status()
-            content = r.json().get("message", {}).get("content", "")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Ollama chat failed: %s", exc)
-            return default
-        finally:
-            self._report(t0)
-        try:
-            return json.loads(_strip_to_json(content))
-        except (json.JSONDecodeError, TypeError) as exc:
-            log.warning("Ollama returned non-JSON (%s): %.200s", exc, content)
-            return default
+        """Chat in JSON mode and return the parsed JSON (or ``default``).
+
+        ``schema`` (a JSON Schema dict) is passed as Ollama's ``format`` so the
+        server constrains decoding to that shape — the model *cannot* emit wrong
+        keys or malformed JSON. Without one, the loose ``format="json"`` mode is
+        used. Either way, a single bounded retry feeds the bad reply back with a
+        corrective message before giving up and returning ``default``.
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        for attempt in range(2):
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                "format": schema if schema is not None else "json",
+                "options": {"temperature": temperature, "num_ctx": self.num_ctx},
+            }
+            t0 = time.monotonic()
+            try:
+                self.calls += 1
+                r = self._client.post(f"{self.host}/api/chat", json=payload)
+                r.raise_for_status()
+                content = r.json().get("message", {}).get("content", "")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Ollama chat failed: %s", exc)
+                return default  # transport errors aren't fixable by a retry prompt
+            finally:
+                self._report(t0)
+            try:
+                return json.loads(_strip_to_json(content))
+            except (json.JSONDecodeError, TypeError) as exc:
+                log.warning("Ollama returned non-JSON (%s, attempt %d): %.200s",
+                            exc, attempt + 1, content)
+                messages = messages + [
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content":
+                        "That reply was not valid JSON. Answer the same request "
+                        "again, outputting ONLY a valid JSON object. No prose."},
+                ]
+        return default
 
     def generate(self, prompt: str, *, system: Optional[str] = None,
                  temperature: float = 0.0) -> str:

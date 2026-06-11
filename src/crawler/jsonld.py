@@ -63,7 +63,7 @@ def _nodes(obj, inherited: str = "other"):
 
 
 def extract_jsonld_fields(html: str) -> dict:
-    """Return {name, telephone, email, url, city, state} found in JSON-LD (any subset).
+    """Return {name, telephone, email, url, city, state, org} found in JSON-LD (any subset).
 
     Person-like nodes are preferred over orgs, and page furniture (breadcrumbs,
     WebSite, ...) is the last resort — so a roster page's BreadcrumbList no
@@ -87,6 +87,13 @@ def extract_jsonld_fields(html: str) -> dict:
                 out[k] = str(v).strip()
                 if k == "name":
                     out["_name_type"] = cat
+        wf = obj.get("worksFor")
+        if "org" not in out:
+            cand = (wf if isinstance(wf, dict)
+                    else wf[0] if isinstance(wf, list) and wf and isinstance(wf[0], dict)
+                    else None)
+            if cand and cand.get("name"):
+                out["org"] = str(cand["name"]).strip()
         addr = obj.get("address")
         if isinstance(addr, dict):
             if addr.get("addressLocality") and "city" not in out:

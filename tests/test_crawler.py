@@ -13,7 +13,6 @@ from urllib.parse import urlparse
 from src.crawler.classifier import LinkClassifier, PageClassifier, _kw_score
 from src.crawler.discovery import DiscoveryCrawler
 from src.crawler.frontier import Frontier, extract_links, normalize_url, same_site
-from src.crawler.glue import result_to_source_cfg
 from src.crawler.intent import CrawlIntent, Planner
 from src.extractors.llm_extractor import html_to_signal_text, _clean
 from src.sources.base import FetchResult
@@ -138,16 +137,6 @@ def test_discovery_crawl_ejects_when_should_stop():
     result = crawler.run(f"{BASE}/index.html")
     assert result.stats["pages_fetched"] == 0
     assert result.stats["ejected"] is True
-
-
-def test_result_to_source_cfg_shape():
-    intent = Planner(client=None).plan("agents", f"{BASE}/index.html", ["NJ", "PA"])
-    crawler = DiscoveryCrawler(intent, client=None, fetcher=DirFetcher(FIX), max_pages=20)
-    cfg = result_to_source_cfg(crawler.run(f"{BASE}/index.html"))
-    assert cfg["extractor"] == "llm"
-    assert cfg["enabled"] is True
-    assert set(cfg["pages"].keys()) == {"NJ", "PA"}
-    assert all(u.startswith(BASE) for u in cfg["pages"]["NJ"])
 
 
 # ---------------------------------------------------------------------------

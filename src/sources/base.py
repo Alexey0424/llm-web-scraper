@@ -4,12 +4,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 from ..config import load_rate_limits
-from ..models import AgentRecord
 from ..utils import compliance
 from ..utils.rate_limit import DomainRateLimiter
 from ..utils.retry import with_retry
@@ -379,22 +377,3 @@ def make_fetcher(
         mode=selected_mode,
         wait_selector=wait_selector,
     )
-
-
-@dataclass
-class Source(ABC):
-    """
-    Abstract source plug-in.
-    """
-
-    name: str
-    base_url: str
-    states: list[str] = field(default_factory=list)
-
-    @abstractmethod
-    def discover_pages(self, state: str) -> list[str]:
-        pass
-
-    @abstractmethod
-    def extract(self, content: str, *, state: str, url: str) -> list[AgentRecord]:
-        pass

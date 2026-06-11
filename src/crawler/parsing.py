@@ -54,6 +54,28 @@ def extract_anchors(html: str) -> list[tuple[str, str]]:
             for a in soup.find_all("a", href=True)]
 
 
+def extract_rel_next(html: str) -> list[str]:
+    """Return hrefs of ``<a rel="next">`` / ``<link rel="next">`` elements."""
+    sel = selector(html)
+    if sel is not None:
+        try:
+            out = []
+            for el in sel.css('a[rel~="next"], link[rel~="next"]'):
+                href = (el.attrib.get("href") or "").strip()
+                if href:
+                    out.append(href)
+            return out
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Scrapling rel-next parse failed (%s); using bs4", exc)
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+    return [(el.get("href") or "").strip()
+            for el in soup.select('a[rel~="next"], link[rel~="next"]')
+            if (el.get("href") or "").strip()]
+
+
 def text_and_contacts(html: str, limit: int = 6000) -> tuple[str, int, int]:
     """Return ``(visible_text[:limit], mailto_count, tel_count)``.
 

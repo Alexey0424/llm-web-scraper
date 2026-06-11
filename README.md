@@ -22,8 +22,15 @@ same-domain) → classify pages → LLM-extract the requested fields → dedupe/
 → dynamic export`
 
 - **Free-form columns** — the fields you name in the prompt *are* the columns
-  (plus an appended `Source URL`). No fixed template.
-- **Local LLM** via Ollama (`gemma4:e4b` default, swappable with `OLLAMA_MODEL`).
+  (plus an appended `Source URL`). No fixed template; works for any record type
+  (people, products, listings, …) — real-estate agents are just the original
+  example use-case.
+- **Local LLM** via Ollama (`gemma4:e4b` default, swappable with `OLLAMA_MODEL`),
+  with JSON-schema-constrained outputs and a grounding check that drops values
+  not actually present on the page.
+- **Discovery** — sitemap seeding, detail-URL pattern learning (validated against
+  the first fetched match), pagination following (`rel=next` / "Next ›"), and
+  canonicalized frontier URLs (tracking params stripped).
 - **Fetching** — Scrapling browser fetch (`SCRAPER_MODE`: `fast` | `dynamic` |
   `stealth`, default `stealth`), per-domain rate limit + bounded retries;
   robots gate currently off (Direct Mode). Block/CAPTCHA pages are detected
@@ -40,7 +47,7 @@ docker compose up ui                 # open http://localhost:5000  → "Crawler"
 ```
 
 In the **Crawler** tab: paste a URL, type what you want + the fields, pick a model,
-set Max visits / Max extracts, click **Discover agents**. Watch the live Plan +
+set Max visits / Max extracts, click **Start discovery**. Watch the live Plan +
 per-call timeline; the discovered records render below and export to Excel. Past
 crawls are revisitable from **Recent crawls**. The **Flow** tab is a live diagram
 of the pipeline.
@@ -57,8 +64,8 @@ docker compose run --rm scraper crawl \
 ## Layout
 
 ```
-src/crawler/        the crawler (intent, frontier, classifier, discovery,
-                    freeform extractor, parsing, store, glue, llm client)
+src/crawler/        the crawler (intent, frontier, classifier, discovery, sitemap,
+                    freeform extractor, parsing, dedup, store, llm client)
 src/sources/base.py Scrapling fetcher (rate-limit + retry + block-page detection)
 src/extractors/     dynamic_exporter (xlsx/csv/jsonl) + shared HTML helpers
 src/web/            Flask UI (Crawler + Flow tabs)

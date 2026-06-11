@@ -14,6 +14,12 @@ import re
 
 SOURCE_URL = ("Source URL", "source_url")
 
+# A requested field that only asks "where did this come from" (URL, Link,
+# Source ...) folds into the always-appended Source URL column instead of
+# creating a duplicate the extractor could never fill. Specific URL fields
+# ("Profile URL", "Website") are real columns and stay.
+_SOURCE_URL_TOKENS = {"url", "link", "links", "source", "web", "page"}
+
 
 def _key(header: str) -> str:
     k = re.sub(r"[^a-z0-9]+", "_", header.strip().lower()).strip("_")
@@ -31,11 +37,11 @@ def _titlecase(header: str) -> str:
 def derive_columns(field_names: list[str]) -> list[tuple[str, str]]:
     """Return ordered, de-duplicated (header, key) pairs + a Source URL column.
 
-    Falls back to a sensible agent default if the prompt yielded no fields.
+    Falls back to generic contact columns if the prompt yielded no fields.
     """
     cleaned = [f for f in (field_names or []) if f and str(f).strip()]
     if not cleaned:
-        cleaned = ["Full Name", "Email", "Phone", "Agency", "City", "State"]
+        cleaned = ["Full Name", "Email", "Phone", "City", "State"]
     cols: list[tuple[str, str]] = []
     seen: set[str] = set()
     for name in cleaned:
@@ -43,6 +49,9 @@ def derive_columns(field_names: list[str]) -> list[tuple[str, str]]:
         key = _key(header)
         if key in seen or key == SOURCE_URL[1]:
             continue
+        toks = set(re.findall(r"[a-z0-9]+", header.lower()))
+        if toks and toks <= _SOURCE_URL_TOKENS:
+            continue  # provenance request -> covered by Source URL
         seen.add(key)
         cols.append((header, key))
     cols.append(SOURCE_URL)

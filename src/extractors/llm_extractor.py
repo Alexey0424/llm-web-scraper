@@ -22,14 +22,27 @@ log = logging.getLogger(__name__)
 DEFAULT_TEXT_LIMIT = 24000
 
 
+# Elements whose end marks a visual line/record boundary. Table cells (td/th)
+# deliberately stay inline so one table row reads as one line.
+_BLOCK_TAGS = (
+    "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+    "section", "article", "header", "footer", "dt", "dd", "blockquote",
+    "figure", "ul", "ol", "table",
+)
+
+
 def html_to_signal_text(html: str, *, limit: int = DEFAULT_TEXT_LIMIT) -> str:
-    """Reduce HTML to text, inlining mailto/tel hrefs so the LLM can see them.
+    """Reduce HTML to line-structured text, inlining mailto/tel as markers.
 
     Uses BeautifulSoup specifically because it *mutates* the DOM in document order
     (``a.append(...)``) to drop ``[email: ...]`` / ``[phone: ...]`` markers right
     next to each record, which materially improves the LLM's name→contact
     association. Scrapling's read-oriented ``Selector`` doesn't do in-place
     mutation cleanly, so bs4 is the right tool here.
+
+    Block-level elements become line breaks (instead of flattening the whole
+    page to one line) so each record card/row reads as its own group of lines —
+    the visual grouping is what tells the LLM which phone belongs to which name.
     """
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "noscript", "svg", "head"]):
@@ -40,7 +53,13 @@ def html_to_signal_text(html: str, *, limit: int = DEFAULT_TEXT_LIMIT) -> str:
             a.append(f" [email: {unquote(href[7:].split('?')[0])}]")
         elif href.lower().startswith("tel:"):
             a.append(f" [phone: {href[4:]}]")
-    text = re.sub(r"\s{2,}", " ", soup.get_text(" ", strip=True))
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    for tag in soup.find_all(_BLOCK_TAGS):
+        tag.append("\n")
+    lines = (re.sub(r"\s+", " ", ln).strip()
+             for ln in soup.get_text(" ").split("\n"))
+    text = "\n".join(ln for ln in lines if ln)
     if len(text) > limit:
         log.info("html_to_signal_text: page text truncated %d -> %d chars",
                  len(text), limit)

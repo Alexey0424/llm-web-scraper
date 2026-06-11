@@ -27,6 +27,39 @@ log = logging.getLogger(__name__)
 _MAILTO = re.compile(r"mailto:", re.IGNORECASE)
 _TEL = re.compile(r"\btel:", re.IGNORECASE)
 
+# JSON schemas for each LLM reply (Ollama constrained decoding): the model
+# physically cannot emit wrong keys or malformed JSON, so parsing never fails.
+_SCORES_SCHEMA = {
+    "type": "object",
+    "properties": {"scores": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"i": {"type": "integer"}, "p": {"type": "number"}},
+        "required": ["i", "p"],
+    }}},
+    "required": ["scores"],
+}
+_URLS_SCHEMA = {
+    "type": "object",
+    "properties": {"urls": {"type": "array", "items": {"type": "string"}}},
+    "required": ["urls"],
+}
+_INDEX_SCHEMA = {
+    "type": "object",
+    "properties": {"index": {"type": "integer"}},
+    "required": ["index"],
+}
+_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_listing": {"type": "boolean"},
+        "count": {"type": "integer"},
+        "links_to_records": {"type": "boolean"},
+        "fields_present": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
+    },
+    "required": ["is_listing", "count", "links_to_records", "fields_present", "reason"],
+}
+
 
 def _kw_score(text: str, include: list[str], exclude: list[str]) -> float:
     t = text.lower()
@@ -87,7 +120,7 @@ class LinkClassifier:
             "probability the link leads toward target records."
         )
         user = f"Current page: {page_url}\nTarget: {intent.description}\n\nLINKS:\n{listing}"
-        data = self.client.chat_json(system, user, default=None)
+        data = self.client.chat_json(system, user, default=None, schema=_SCORES_SCHEMA)
         out: dict[str, float] = {}
         if isinstance(data, dict) and isinstance(data.get("scores"), list):
             for row in data["scores"]:
@@ -147,7 +180,8 @@ class LinkClassifier:
         # Slightly higher temperature: this is a "brainstorm several candidate
         # localities" call, not a deterministic judgement -- greedy decoding tends
         # to emit only the single most-likely city per location.
-        data = self.client.chat_json(system, user, temperature=0.5, default=None)
+        data = self.client.chat_json(system, user, temperature=0.5, default=None,
+                                     schema=_URLS_SCHEMA)
         out: list[str] = []
         seen = {u.rstrip("/") for u in sample_urls}
         if isinstance(data, dict) and isinstance(data.get("urls"), list):
@@ -189,7 +223,7 @@ class LinkClassifier:
             'Output ONLY JSON: {"index": <cluster number>}.'
         )
         user = f"Target: {intent.description}\n\nCLUSTERS:\n{listing}"
-        data = self.client.chat_json(system, user, default=None)
+        data = self.client.chat_json(system, user, default=None, schema=_INDEX_SCHEMA)
         if isinstance(data, dict):
             try:
                 idx = int(data.get("index"))
@@ -269,7 +303,7 @@ class PageClassifier:
             f"URL: {url}\nTarget: {intent.description}\n"
             f"(page has {mailtos} mailto + {tels} tel links)\n\nTEXT:\n{text}"
         )
-        data = self.client.chat_json(system, user, default=None)
+        data = self.client.chat_json(system, user, default=None, schema=_VERDICT_SCHEMA)
         if isinstance(data, dict) and "is_listing" in data:
             is_list = bool(data.get("is_listing"))
             try:

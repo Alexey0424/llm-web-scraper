@@ -1,9 +1,8 @@
 """Free-form LLM extraction: pull whatever fields the prompt asked for.
 
-Unlike the fixed-schema ``LlmExtractor`` (which mapped onto the 9-column
-AgentRecord), this returns plain dicts keyed by the prompt-derived column keys.
-The columns are decided per crawl by :mod:`src.crawler.fields`, so the same
-engine works for real-estate agents or anything else the user describes.
+Returns plain dicts keyed by prompt-derived column keys. The columns are
+decided per crawl by :mod:`src.crawler.fields`, so the same engine works for
+any record type the user describes — there is no fixed schema.
 """
 
 from __future__ import annotations
@@ -12,13 +11,27 @@ import logging
 import re
 
 from ..extractors.llm_extractor import _chunks, html_to_signal_text
-from ..normalizers.phone_email_normalizer import normalize_phone
+from ..normalizers.phone_email_normalizer import normalize_email, normalize_phone
 from .jsonld import extract_contact_fields
 from .llm import OllamaClient
 
 log = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _records_schema(keys: list[str]) -> dict:
+    """JSON schema for the extraction reply: constrained decoding makes wrong
+    keys / malformed JSON impossible (Ollama ``format=<schema>``)."""
+    return {
+        "type": "object",
+        "properties": {"records": {"type": "array", "items": {
+            "type": "object",
+            "properties": {k: {"type": ["string", "null"]} for k in keys},
+            "required": list(keys),
+        }}},
+        "required": ["records"],
+    }
 
 
 def _tokens(s) -> set[str]:
@@ -42,6 +55,95 @@ def _name_match(ld_name: str, row: dict, name_keys: list[str]) -> bool:
         if rt and (t <= rt or rt <= t or len(t & rt) >= 2):
             return True
     return False
+
+
+_PHONE_KEY_TOKENS = ("phone", "tel", "cell", "mobile")
+# Column-key tokens that mark a *organization* name column ("agency_name"),
+# which must never be treated as the record's person-name field.
+_ORG_NAME_TOKENS = ("agency", "company", "brokerage", "organization", "office",
+                    "firm", "business", "brand", "team")
+_INITIAL_RE = re.compile(r"[A-Za-z]\.?")
+_OBFUSCATED_AT_RE = re.compile(r"\s*(\[at\]|\(at\)|\sat\s)\s*", re.IGNORECASE)
+
+
+def _person_name_keys(keys: list[str]) -> list[str]:
+    return [k for k in keys if "name" in k and "first" not in k and "last" not in k
+            and not any(t in k for t in _ORG_NAME_TOKENS)]
+
+
+def _derive_name_fields(row: dict, keys: list[str]) -> dict:
+    """Fill first/last from a full name (and full from first+last).
+
+    Sources frequently publish only one of the two forms; when the prompt asks
+    for both, the missing one is derived deterministically (a single middle
+    initial is skipped, multi-word last names are kept whole).
+    """
+    fulls = _person_name_keys(keys)
+    firsts = [k for k in keys if "name" in k and "first" in k]
+    lasts = [k for k in keys if "name" in k and "last" in k]
+    full_val = next((row[k] for k in fulls if row.get(k)), None)
+    first_val = next((row[k] for k in firsts if row.get(k)), None)
+    last_val = next((row[k] for k in lasts if row.get(k)), None)
+    if full_val:
+        toks = full_val.split()
+        if len(toks) >= 2:
+            first, rest = toks[0], toks[1:]
+            if len(rest) >= 2 and _INITIAL_RE.fullmatch(rest[0]):
+                rest = rest[1:]
+            for k in firsts:
+                if not row.get(k):
+                    row[k] = first
+            for k in lasts:
+                if not row.get(k):
+                    row[k] = " ".join(rest)
+    elif first_val or last_val:
+        joined = " ".join(x for x in (first_val, last_val) if x)
+        for k in fulls:
+            if not row.get(k):
+                row[k] = joined
+    return row
+
+
+def _email_grounded(v: str, src: str) -> bool:
+    return v.lower() in src
+
+
+def _phone_grounded(v: str, src: str) -> bool:
+    digits = re.sub(r"\D", "", v)
+    if len(digits) < 7:
+        return True  # too short to judge reliably
+    pat = r"\D{0,3}".join(re.escape(d) for d in digits)
+    return re.search(pat, src) is not None
+
+
+def _name_grounded(v: str, src: str) -> bool:
+    toks = [t for t in re.findall(r"[a-z0-9]+", v.lower()) if len(t) > 1]
+    if not toks:
+        return True
+    hits = sum(1 for t in toks if t in src)
+    return hits >= 1 and hits * 2 >= len(toks)
+
+
+def _ground_row(row: dict, keys: list[str], src: str) -> dict:
+    """Blank email/phone/name values that cannot be located in the page.
+
+    A small model occasionally invents plausible contact data; an extraction
+    that can't be found in the source is treated as hallucinated (the
+    LangExtract pattern). Format differences are tolerated: phones match on
+    digits with separators allowed, names on token majority.
+    """
+    for k in keys:
+        v = row.get(k)
+        if not v:
+            continue
+        if "email" in k and not _email_grounded(v, src):
+            row[k] = None
+        elif any(t in k for t in _PHONE_KEY_TOKENS) and not _phone_grounded(v, src):
+            row[k] = None
+        elif ("name" in k and "first" not in k and "last" not in k
+              and not _name_grounded(v, src)):
+            row[k] = None
+    return row
 
 
 def _clean(v) -> str | None:
@@ -94,11 +196,19 @@ class FreeFormExtractor:
             if ld_cat == "site":
                 fill.pop("name", None)
             row = self._fill_from_jsonld({k: None for k in keys}, fill)
+            row = _derive_name_fields(row, keys)
             return [row] if any(row.values()) else []
         text = html_to_signal_text(content)
+        # Grounding source: raw HTML + the marker-inlined text (markers carry
+        # decoded mailto emails that may be URL-encoded in the raw HTML) + a
+        # de-obfuscated variant so a normalized "x@y.com" still matches a page
+        # that printed "x [at] y.com".
+        ground_src = ((content or "").lower() + "\n" + text.lower() + "\n"
+                      + _OBFUSCATED_AT_RE.sub("@", text.lower()))
         out: list[dict] = []
         seen: set[str] = set()
         system = self._system()
+        schema = _records_schema(keys)
         chunks = _chunks(text)
         if len(chunks) > self.max_chunks:
             log.info("FreeFormExtractor: page text %d chars -> %d chunks; "
@@ -106,7 +216,8 @@ class FreeFormExtractor:
                      self.max_chunks, base_url)
         for chunk in chunks[: self.max_chunks]:
             data = self.client.chat_json(
-                system, f"PAGE URL: {base_url}\n\nPAGE TEXT:\n{chunk}", default=None
+                system, f"PAGE URL: {base_url}\n\nPAGE TEXT:\n{chunk}",
+                default=None, schema=schema,
             )
             records = data.get("records") if isinstance(data, dict) else None
             for raw in records or []:
@@ -116,14 +227,17 @@ class FreeFormExtractor:
                 for k in keys:
                     if not row.get(k):
                         continue
-                    # Salvage a clean email out of a noisy value.
-                    if "email" in k and not _EMAIL_RE.fullmatch(row[k]):
+                    # Salvage a clean email out of a noisy value, then
+                    # normalize (de-obfuscate, lowercase, validate).
+                    if "email" in k:
                         m = _EMAIL_RE.search(row[k])
-                        row[k] = m.group(0) if m else row[k]
+                        cand = m.group(0) if m else row[k]
+                        row[k] = normalize_email(cand) or cand
                     # Normalize phones to NNN-NNN-NNNN; keep the raw value if it
                     # isn't a parseable US number (extension, international, ...).
                     elif "phone" in k or "tel" in k or "cell" in k or "mobile" in k:
                         row[k] = normalize_phone(row[k]) or row[k]
+                row = _ground_row(row, keys, ground_src)
                 if not any(row.values()):
                     continue
                 sig = "|".join((row.get(k) or "").lower() for k in keys)
@@ -139,8 +253,7 @@ class FreeFormExtractor:
         # and only collapse when the JSON-LD name actually denotes one of the
         # extracted records (or the page yielded none) — otherwise a footer org
         # or breadcrumb would silently flatten a whole roster into one row.
-        name_keys = [k for k in keys
-                     if "name" in k and "first" not in k and "last" not in k] or keys
+        name_keys = _person_name_keys(keys) or keys
         ld_name = ld.get("name")
         if ld_name and ld_cat != "site" and (
                 ld_cat == "person" or not out
@@ -161,6 +274,7 @@ class FreeFormExtractor:
             if ld_cat in ("org", "site"):
                 fill.pop("name", None)
             out = [self._fill_from_jsonld(out[0], fill)]
+        out = [_derive_name_fields(r, keys) for r in out]
         log.info("FreeFormExtractor: %d records from %s", len(out), base_url)
         return out
 
@@ -183,7 +297,12 @@ class FreeFormExtractor:
                   and ld.get("telephone")):
                 row[k] = normalize_phone(ld["telephone"]) or ld["telephone"]
                 phone_used = True
-            elif "name" in k and "first" not in k and "last" not in k and ld.get("name"):
+            elif any(t in k for t in _ORG_NAME_TOKENS) and ld.get("org"):
+                if "name" in k or k in ("agency", "company", "brokerage",
+                                        "organization", "firm", "office"):
+                    row[k] = ld["org"]
+            elif ("name" in k and "first" not in k and "last" not in k
+                  and not any(t in k for t in _ORG_NAME_TOKENS) and ld.get("name")):
                 row[k] = ld["name"]
             elif k == "city" and ld.get("city"):
                 row[k] = ld["city"]

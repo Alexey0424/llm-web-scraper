@@ -11,14 +11,31 @@ from __future__ import annotations
 import heapq
 import itertools
 from dataclasses import dataclass, field
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import (parse_qsl, urldefrag, urlencode, urljoin, urlparse,
+                          urlunparse)
 
 from .parsing import extract_anchors
 
+# Query params that only track the visitor, never select content. Each variant
+# they create costs a full fetch out of the page budget, so they are stripped
+# from the frontier key (the deterministic core of URL-pattern dedup).
+_TRACKING_PARAMS = {
+    "gclid", "fbclid", "msclkid", "yclid", "dclid", "twclid", "igshid",
+    "mc_cid", "mc_eid", "_ga", "_gl", "_hsenc", "_hsmi", "wickedid",
+}
+
 
 def normalize_url(url: str) -> str:
-    """Drop fragments and trailing slashes for stable dedup keys."""
+    """Canonical frontier key: drop fragments, tracking params and trailing
+    slashes; sort the remaining query params; lowercase scheme + host."""
     url, _ = urldefrag(url.strip())
+    p = urlparse(url)
+    if p.scheme and p.netloc:
+        q = sorted((k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+                   if not (k.lower().startswith("utm_")
+                           or k.lower() in _TRACKING_PARAMS))
+        url = urlunparse((p.scheme.lower(), p.netloc.lower(), p.path,
+                          p.params, urlencode(q), ""))
     if url.endswith("/") and url.count("/") > 3:  # keep scheme://host/ as-is
         url = url.rstrip("/")
     return url

@@ -52,8 +52,9 @@ def crawl(
     columns match the prompt. There is no fixed template; the prompt decides the
     columns. ``store`` is an optional ``FreeFormStore`` (the UI passes one).
     """
-    from .crawler.discovery import DiscoveryCrawler, diagnose
-    from .crawler.fields import derive_columns, dedup_key
+    from .crawler.dedup import record_key
+    from .crawler.discovery import DiscoveryCrawler, diagnose, url_segment
+    from .crawler.fields import derive_columns
     from .crawler.freeform import FreeFormExtractor
     from .crawler.intent import Planner
     from .crawler.llm import OllamaClient
@@ -104,19 +105,22 @@ def crawl(
     per_seg = (-(-target // len(segs)) if (target is not None and segs) else None)  # ceil
     seg_counts: dict[str, int] = {s: 0 for s in segs}
 
-    def _match_segment(row: dict) -> str | None:
+    def _match_segment(row: dict, page_url: str = "") -> str | None:
         """Which requested segment this record belongs to (None = off-target).
 
         Whole-word match of a segment value against the record's field values, so
-        short codes (``IN``) don't match unrelated text (``Indianapolis``). Returns
-        "" when no segments were requested (everything passes)."""
+        short codes (``IN``) don't match unrelated text (``Indianapolis``). A
+        record whose fields never repeat the segment still counts when its
+        source URL proves it (e.g. ``/agents-nj/jane`` for segment NJ) — detail
+        pages rarely restate the state/brand they belong to. Returns "" when no
+        segments were requested (everything passes)."""
         if not segs:
             return ""
         hay = " ".join(str(v) for v in row.values() if v)
         for s in segs:
             if re.search(r"\b" + re.escape(s) + r"\b", hay, re.IGNORECASE):
                 return s
-        return None
+        return url_segment(page_url, segs) if page_url else None
 
     # Extraction state is set up BEFORE the crawl so the discovery callback (target
     # mode) can use it. The run is ALWAYS recorded (even with zero discovered
@@ -124,7 +128,6 @@ def crawl(
     own_store = (store is None) if extract else False
     ff = (store or FreeFormStore(config.DATA_DIR / "processed" / "freeform.sqlite")) if extract else None
     run_id = ff.start_run(url, prompt, columns, now_iso(), batch_id=batch_id) if ff else None
-    dk = dedup_key(columns) if ff else None
     extractor = FreeFormExtractor(columns, entity=intent.entity, client=client) if ff else None
     kept = 0
     dropped_offtarget = 0
@@ -138,13 +141,15 @@ def crawl(
         for row in extractor.extract(html, base_url=page_url):
             if target is not None and kept >= target:
                 break  # hit the overall record target -> stop mid-page, no overshoot
-            seg = _match_segment(row)
+            seg = _match_segment(row, page_url)
             if seg is None:
                 dropped_offtarget += 1  # not in any requested segment -> drop
                 continue
             if per_seg is not None and seg and seg_counts.get(seg, 0) >= per_seg:
                 continue  # this segment's fair share is full -> keep results balanced
-            if ff.add_record(run_id, (row.get(dk) or "").lower(), page_url, row, now_iso()):
+            # Canonical identity (email -> phone -> name+location): the same
+            # person under two name spellings stores once per run.
+            if ff.add_record(run_id, record_key(row) or "", page_url, row, now_iso()):
                 added += 1
                 kept += 1
                 if seg:
@@ -169,7 +174,10 @@ def crawl(
             return set(segs)
         return {s for s in segs if seg_counts.get(s, 0) < per_seg}
 
-    on_data_page = None
+    # Standard mode keeps each data page's HTML so the post-crawl extraction
+    # pass reuses it instead of paying a second fetch (~80s/page on real runs).
+    page_cache: dict[str, str] = {}
+
     if target is not None:
         def on_data_page(page_url, html, verdict):  # noqa: ANN001 - simple callback
             _extract_page(page_url, html)
@@ -177,6 +185,12 @@ def crawl(
         # Safety cap: the callback stops early once balanced; this only bounds the
         # worst case where some segment can never be filled.
         max_pages = max(max_pages, 40)
+    elif extract:
+        def on_data_page(page_url, html, verdict):  # noqa: ANN001 - simple callback
+            page_cache[page_url] = html  # cache only; extraction ranks pages later
+            return True
+    else:
+        on_data_page = None
 
     crawler = DiscoveryCrawler(
         intent, client, max_pages=max_pages, max_depth=max_depth,
@@ -215,8 +229,9 @@ def crawl(
     if target is None:
         # Standard mode: extract from the most COMPLETE pages first (#2) -- those
         # where the classifier saw the most requested fields -- ties broken by
-        # crawl score. Re-fetch each (discovery didn't retain their HTML). Target
-        # mode already extracted during discovery via the callback.
+        # crawl score. HTML cached during discovery is reused; only pages that
+        # somehow missed the cache are re-fetched. Target mode already extracted
+        # during discovery via the callback.
         if result.data_page_urls:
             ranked = sorted(result.data_pages,
                             key=lambda p: (len(p.fields_found), p.score), reverse=True)
@@ -224,16 +239,21 @@ def crawl(
             if len(result.data_page_urls) > len(pages_to_extract):
                 log.info("maxExtracts=%d: extracting %d of %d discovered pages",
                          max_extracts, len(pages_to_extract), len(result.data_page_urls))
-            fetcher = make_fetcher()
+            fetcher = None
             for page_url in pages_to_extract:
                 if should_stop is not None and should_stop():
                     log.info("extraction ejected by user after %d page(s)", len(extracted_urls))
                     break
-                res = fetcher.get(page_url)
-                if not res.ok:
-                    log.info("extract skip %s (%s)", page_url, res.reason[:80])
-                    continue
-                _extract_page(page_url, res.content)
+                html = page_cache.get(page_url)
+                if html is None:
+                    if fetcher is None:
+                        fetcher = make_fetcher()
+                    res = fetcher.get(page_url)
+                    if not res.ok:
+                        log.info("extract skip %s (%s)", page_url, res.reason[:80])
+                        continue
+                    html = res.content
+                _extract_page(page_url, html)
         else:
             log.info("no data pages discovered; recording crawl with 0 records")
     elif _target_met():

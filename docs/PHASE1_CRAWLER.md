@@ -32,7 +32,7 @@ prompt-derived columns, de-duplicated, stored per-run in **`FreeFormStore`**
 
 ### Web UI (http://localhost:5000) — the **Crawler** tab
 Paste a URL, type what you want + the fields, pick a model, set Max visits / Max
-extracts, click **Discover agents**. A live **Plan** + per-call **timeline** shows
+extracts, click **Start discovery**. A live **Plan** + per-call **timeline** shows
 each LLM call and page visit; when it finishes, the **Discovered records** table
 renders (columns from your prompt) and exports to Excel. Past crawls are
 revisitable from **Recent crawls**. (The **Flow** tab is a live diagram of the
@@ -90,16 +90,21 @@ needs the model. This is also why the unit tests run with no LLM and no network.
 
 ```
 src/crawler/
-  llm.py          OllamaClient (JSON-mode chat, plain generate, health check, timing)
-  intent.py       CrawlIntent + Planner (prompt -> structured intent)
+  llm.py          OllamaClient (schema-constrained JSON chat + retry, health check, timing)
+  intent.py       CrawlIntent + Planner (prompt -> structured intent; prompt-derived keywords)
   fields.py       derive_columns / dedup_key (prompt fields -> table columns)
-  frontier.py     priority frontier + same-domain link extraction
+  frontier.py     priority frontier + canonicalized same-domain link extraction
   classifier.py   LinkClassifier (rank links) + PageClassifier (is-listing?)
-  discovery.py    DiscoveryCrawler — the crawl loop + diagnose() + live on_event hook
-  freeform.py     FreeFormExtractor — page HTML -> dict rows keyed by the columns
-  parsing.py      Scrapling Selector helpers (links/text), bs4 fallback
+  discovery.py    DiscoveryCrawler — crawl loop, detail-pattern validation,
+                  pagination following, diagnose(), live on_event hook
+  sitemap.py      /sitemap.xml seeding (bounded, same-site, rate-limited)
+  freeform.py     FreeFormExtractor — rows keyed by the columns; grounding guard;
+                  derived name fields; JSON-LD merge
+  jsonld.py       schema.org JSON-LD reader (name/phone/email/address/worksFor)
+  dedup.py        canonical record key (email -> phone -> name+location) + export ledger
+  parsing.py      Scrapling Selector helpers (links/text/rel=next), bs4 fallback
   store.py        FreeFormStore (per-run columns + rows in SQLite)
-src/extractors/llm_extractor.py   shared HTML->text helpers (html_to_signal_text, _chunks)
+src/extractors/llm_extractor.py   HTML -> line-structured text (+ [email:]/[phone:] markers)
 src/exporters/dynamic_exporter.py  dynamic Excel/CSV/JSONL writer
 src/sources/base.py               Scrapling fetcher (rate-limit + retry + block-page detection)
 ```
@@ -107,6 +112,8 @@ Orchestrated by `main.crawl()` / the `crawl` CLI subcommand. UI: `/crawl`,
 `/crawl-status`, `/crawl-ack`, `/crawl-models`, `/reset`, `/download` in
 `src/web/app.py` + the Crawler & Flow tabs in `templates/index.html`.
 
-Tests: `tests/test_crawler.py` + `tests/test_freeform.py` (offline, no LLM).
+Tests: `tests/` (offline, no LLM — frontier, classifiers, grounding, derived
+fields, sitemap, pagination, detail-pattern validation, main pipeline).
 End-to-end demo against a local fixture site with the real LLM:
-`scripts/crawl_fixture_demo.py`.
+`scripts/crawl_fixture_demo.py`. Accuracy benchmark with golden records:
+`scripts/bench_extraction.py` (live model; per-field precision/recall).

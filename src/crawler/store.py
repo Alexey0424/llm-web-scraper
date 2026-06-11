@@ -1,9 +1,8 @@
 """SQLite store for free-form crawl results.
 
-Kept separate from the fixed-schema AgentRecord store: free-form records have
-arbitrary, per-run columns, so each row's values are stored as a JSON blob and
-each run records its own column set. The UI reads the latest run to render a
-dynamic table and offer the dynamic export.
+Free-form records have arbitrary, per-run columns, so each row's values are
+stored as a JSON blob and each run records its own column set. The UI reads
+the latest run to render a dynamic table and offer the dynamic export.
 """
 
 from __future__ import annotations
