@@ -8,3 +8,4 @@ data/processed/*.sqlite
 data/exports/
 runs/
 *.log
+node_modules/
