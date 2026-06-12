@@ -66,9 +66,29 @@ def crawl(
     # `model` (optional, e.g. from the UI toggle) overrides OLLAMA_MODEL for this
     # crawl; the same model is reused for extraction so results are consistent.
     client = OllamaClient(model=model)
-    if on_event:
-        # Every LLM completion emits a timed "runCompletion" to the live feed.
-        client.on_call = on_event
+    # Per-run timeline: capture every live-feed event so a finished run can be
+    # replayed from history. The live UI keeps only the last ~150 events for
+    # render speed; the persisted timeline keeps up to TIMELINE_CAP.
+    TIMELINE_CAP = 2000
+    _timeline: list[dict] = []
+
+    def _record(ev: dict) -> None:
+        # The "plan" event feeds the live UI's own box, not the scrolling stream;
+        # the persisted timeline mirrors the stream, so plan is not buffered here.
+        if ev.get("kind") != "plan":
+            _timeline.append({"kind": ev.get("kind", ""), "seconds": ev.get("seconds"),
+                              "url": ev.get("url", ""), "status": ev.get("status", ""),
+                              "note": ev.get("note", "")})
+        if on_event:
+            on_event(ev)
+
+    def _timeline_payload() -> dict:
+        total = len(_timeline)
+        return {"events": _timeline[-TIMELINE_CAP:], "truncated": total > TIMELINE_CAP,
+                "total": total}
+
+    # Every LLM completion emits a timed "runCompletion"; route it through _record.
+    client.on_call = _record
     if not client.available():
         log.warning(
             "Ollama model '%s' not reachable at %s -- crawl will use heuristic "
@@ -155,10 +175,9 @@ def crawl(
                 if seg:
                     seg_counts[seg] = seg_counts.get(seg, 0) + 1
         extracted_urls.append(page_url)
-        if on_event:
-            on_event({"kind": "extract", "url": page_url, "status": "extracted",
-                      "fetched": 0, "data_pages": dp_count, "records": kept,
-                      "note": f"+{added} record(s) ({kept} total)"})
+        _record({"kind": "extract", "url": page_url, "status": "extracted",
+                 "fetched": 0, "data_pages": dp_count, "records": kept,
+                 "note": f"+{added} record(s) ({kept} total)"})
         return added
 
     def _target_met() -> bool:
@@ -194,7 +213,7 @@ def crawl(
 
     crawler = DiscoveryCrawler(
         intent, client, max_pages=max_pages, max_depth=max_depth,
-        same_domain=same_domain, on_event=on_event, on_data_page=on_data_page,
+        same_domain=same_domain, on_event=_record, on_data_page=on_data_page,
         needed_segments=(_needed_segments if (target is not None and segs) else None),
         should_stop=should_stop,
     )
@@ -300,7 +319,7 @@ def crawl(
         log.info("field coverage: %d/%d requested fields never appeared on any "
                  "data page (likely not published by this source): %s",
                  len(missing_fields), len(requested_headers), ", ".join(missing_fields))
-    ff.finish_run(run_id, now_iso(), ex_stats)
+    ff.finish_run(run_id, now_iso(), ex_stats, timeline=_timeline_payload())
     out["extract_stats"] = ex_stats
     out["run_id"] = run_id
     print(f"\nExtraction: {kept} record(s) into {len(columns)} columns.")

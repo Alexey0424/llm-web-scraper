@@ -93,3 +93,14 @@ def test_standard_mode_does_not_refetch_extracted_pages(site):
     _crawl(store)
     for path in ("/agents-nj/jane", "/agents-nj/jsmith"):
         assert fetcher.gets.count(path) == 1, f"{path} fetched more than once"
+
+
+def test_successful_crawl_persists_timeline(site):
+    fetcher, store = site
+    out = _crawl(store)
+    run = store.get_run(out["run_id"])
+    import json
+    tl = json.loads(run["timeline_json"])
+    assert tl is not None and tl["truncated"] is False
+    # Extraction emits at least one timed "extract" event into the stream.
+    assert any(e["kind"] == "extract" for e in tl["events"])
