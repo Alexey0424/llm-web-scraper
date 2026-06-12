@@ -1617,6 +1617,7 @@
         does: 'Dynamic "Discovered records" table + exported files, per-run or combined-per-batch.',
         notes: [{ lbl: 'UI', text: 'vanilla JS; client-side search filter over rows' },
                 { lbl: 'Live', text: 'Plan + per-LLM-call timeline + stage stepper + progress: % done, elapsed, regression ETA (record-target mode), records sparkline, batch step dots' },
+                { lbl: 'History', text: 'Every run records its full timed event timeline; revisit a past crawl and open the Timeline tab to replay it (capped at 2,000 events, oldest dropped).' },
                 { lbl: 'Combine', text: 'Bulk → one stacked sheet (+Site col); Queue → one workbook, a sheet per op (exporters/dynamic_exporter.py).' },
                 { lbl: 'Already saved', text: 'rows present in a PREVIOUS export are flagged "exported" (deterministic email→phone→name key; exports are the source of truth).' },
                 { lbl: 'Manage', text: 'Delete a single crawl/export, clear history, clear exports, or reset everything.' }] }
