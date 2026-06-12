@@ -752,6 +752,12 @@
       <span class="meta">Prompt</span><span style="color:var(--ink)">“{{ ff_run.prompt }}”</span>
       <span class="meta">Columns</span><span>{% for header, key in ff_columns %}<span class="tag tag--muted" style="margin:0 5px 5px 0">{{ header }}</span>{% endfor %}</span>
     </div>
+    <div class="segment" id="run-view-seg" role="tablist" aria-label="Run view"
+         style="margin-bottom:var(--sp-3)">
+      <button type="button" data-view="results" class="active" role="tab" aria-selected="true">Results</button>
+      <button type="button" data-view="timeline" role="tab" aria-selected="false">Timeline</button>
+    </div>
+    <div class="run-view" data-view="results">
     {% if seen_count %}
     <div class="dupe-banner" title="Matched by email, then phone, then name — against your exported .xlsx files only">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
@@ -805,6 +811,13 @@
         {% endif %}
       </div>
     {% endif %}
+    </div><!-- /run-view results -->
+    <div class="run-view" data-view="timeline" hidden data-run="{{ ff_sel_id }}">
+      <div id="run-timeline-head" class="trace-stats"></div>
+      <p id="run-timeline-cap" class="meta" style="white-space:normal" hidden></p>
+      <div id="run-timeline-stream" class="stream" style="max-height:420px; overflow:auto"></div>
+      <div id="run-timeline-empty" class="trace-empty" hidden>No timeline was recorded for this crawl.</div>
+    </div>
   </section>
   {% endif %}
 
@@ -939,6 +952,62 @@
     var saved = 'crawler';
     try { saved = localStorage.getItem('activeTab') || 'crawler'; } catch (e) {}
     activate(saved);
+  })();
+
+  /* ---- Run view sub-tabs (Results / Timeline) -------------------- */
+  (function initRunView() {
+    var seg = $('#run-view-seg');
+    if (!seg) return;                       // no run selected
+    var views = $$('.run-view');
+    var timelineLoaded = false;
+
+    function show(view) {
+      seg.querySelectorAll('button').forEach(function (b) {
+        var on = b.getAttribute('data-view') === view;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      views.forEach(function (v) { v.hidden = v.getAttribute('data-view') !== view; });
+      if (view === 'timeline' && !timelineLoaded) { timelineLoaded = true; loadTimeline(); }
+    }
+
+    function kvChips(info) {
+      function kv(label, val) {
+        return (val === null || val === undefined || val === '') ? '' :
+          '<span class="kv">' + esc(label) + ' <b>' + esc(val) + '</b></span>';
+      }
+      var i = info || {};
+      return [kv('records', i.records), kv('pages fetched', i.pages_fetched),
+              kv('data pages', i.data_pages), kv('blocked', i.blocked),
+              kv('errors', i.errors), kv('LLM calls', i.llm_calls),
+              kv('model', i.model),
+              (i.ejected ? '<span class="kv"><b style="color:var(--warn)">ejected</b></span>' : '')
+             ].join('');
+    }
+
+    function loadTimeline() {
+      var panel = $('.run-view[data-view="timeline"]');
+      var id = panel && panel.getAttribute('data-run');
+      var head = $('#run-timeline-head'), cap = $('#run-timeline-cap'),
+          stream = $('#run-timeline-stream'), empty = $('#run-timeline-empty');
+      if (!id) { if (empty) empty.hidden = false; return; }
+      fetch('/run/' + id + '/trace').then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { if (empty) { empty.textContent = d.error || 'Could not load timeline'; empty.hidden = false; } return; }
+        if (head) head.innerHTML = kvChips(d.info);
+        var tl = d.timeline;
+        if (!tl || !tl.events || !tl.events.length) { if (empty) empty.hidden = false; return; }
+        renderCrawlStream(tl.events, stream);
+        if (tl.truncated && cap) {
+          cap.textContent = 'Showing the most recent ' + tl.events.length.toLocaleString() +
+            ' events of ' + (tl.total || 0).toLocaleString() + ' — older events were not recorded.';
+          cap.hidden = false;
+        }
+      }).catch(function () { if (empty) { empty.textContent = 'Network error loading timeline'; empty.hidden = false; } });
+    }
+
+    seg.querySelectorAll('button').forEach(function (b) {
+      b.addEventListener('click', function () { show(b.getAttribute('data-view')); });
+    });
   })();
 
   /* ---- Theme toggle: day <-> night, revealed from the button ------ */
@@ -1081,9 +1150,10 @@
 
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
-  function renderCrawlStream(events) {
-    if (!crawlStream) return;
-    crawlStream.innerHTML = '';
+  function renderCrawlStream(events, target) {
+    target = target || crawlStream;
+    if (!target) return;
+    target.innerHTML = '';
     events.slice().reverse().forEach(function (e) {
       var kind = e.kind || (e.status === 'extracted' ? 'extract' : 'visit');
       var label = kind === 'runCompletion' ? 'runCompletion'
@@ -1097,7 +1167,7 @@
       row.className = 'stream-row';
       row.innerHTML = '<span class="secs">' + secs + '</span>' +
         '<span class="kind kind-' + kind + '">' + label + '</span>' + detail + note;
-      crawlStream.appendChild(row);
+      target.appendChild(row);
     });
   }
 
