@@ -346,7 +346,6 @@ def crawl(
                     "records": ff.count_for_run(run_id),
                     "error": str(exc),
                     "diagnosis": f"Crawl errored: {exc}",
-                    "finished": now_iso(),
                 }, timeline=_timeline_payload())
             except Exception:  # noqa: BLE001 - never mask the original failure
                 log.warning("could not persist partial timeline for errored run %s", run_id)
