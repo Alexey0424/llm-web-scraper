@@ -108,3 +108,30 @@ def test_successful_crawl_persists_timeline(site):
     # ...and the crawler-side wiring (DiscoveryCrawler on_event=_record) also
     # captured at least one non-extract (fetch/visit) event.
     assert any(e["kind"] != "extract" for e in tl["events"])
+
+
+def test_errored_crawl_persists_partial_timeline(site, monkeypatch):
+    fetcher, store = site
+    import json
+    import src.crawler.discovery as disco
+
+    class BoomCrawler:
+        def __init__(self, *a, on_event=None, **k):
+            self._oe = on_event
+
+        def run(self, url):
+            if self._oe:
+                self._oe({"kind": "visit", "url": url, "status": "ok", "note": "probe"})
+            raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(disco, "DiscoveryCrawler", BoomCrawler)
+
+    with pytest.raises(RuntimeError, match="kaboom"):
+        _crawl(store)
+
+    run = store.latest_run()
+    assert run["finished"]                       # finished despite the error
+    tl = json.loads(run["timeline_json"])
+    assert tl and tl["events"][0]["status"] == "ok"   # partial timeline captured
+    stats = json.loads(run["stats_json"])
+    assert "error" in (stats.get("diagnosis") or "").lower()

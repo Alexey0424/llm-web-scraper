@@ -148,198 +148,212 @@ def crawl(
     own_store = (store is None) if extract else False
     ff = (store or FreeFormStore(config.DATA_DIR / "processed" / "freeform.sqlite")) if extract else None
     run_id = ff.start_run(url, prompt, columns, now_iso(), batch_id=batch_id) if ff else None
-    extractor = FreeFormExtractor(columns, entity=intent.entity, client=client) if ff else None
-    kept = 0
-    dropped_offtarget = 0
-    extracted_urls: list[str] = []
-    dp_count = 0
+    try:
+        extractor = FreeFormExtractor(columns, entity=intent.entity, client=client) if ff else None
+        kept = 0
+        dropped_offtarget = 0
+        extracted_urls: list[str] = []
+        dp_count = 0
 
-    def _extract_page(page_url: str, html: str) -> int:
-        nonlocal kept, dp_count, dropped_offtarget
-        dp_count += 1
-        added = 0
-        for row in extractor.extract(html, base_url=page_url):
-            if target is not None and kept >= target:
-                break  # hit the overall record target -> stop mid-page, no overshoot
-            seg = _match_segment(row, page_url)
-            if seg is None:
-                dropped_offtarget += 1  # not in any requested segment -> drop
-                continue
-            if per_seg is not None and seg and seg_counts.get(seg, 0) >= per_seg:
-                continue  # this segment's fair share is full -> keep results balanced
-            # Canonical identity (email -> phone -> name+location): the same
-            # person under two name spellings stores once per run.
-            if ff.add_record(run_id, record_key(row) or "", page_url, row, now_iso()):
-                added += 1
-                kept += 1
-                if seg:
-                    seg_counts[seg] = seg_counts.get(seg, 0) + 1
-        extracted_urls.append(page_url)
-        _record({"kind": "extract", "url": page_url, "status": "extracted",
-                 "fetched": 0, "data_pages": dp_count, "records": kept,
-                 "note": f"+{added} record(s) ({kept} total)"})
-        return added
+        def _extract_page(page_url: str, html: str) -> int:
+            nonlocal kept, dp_count, dropped_offtarget
+            dp_count += 1
+            added = 0
+            for row in extractor.extract(html, base_url=page_url):
+                if target is not None and kept >= target:
+                    break  # hit the overall record target -> stop mid-page, no overshoot
+                seg = _match_segment(row, page_url)
+                if seg is None:
+                    dropped_offtarget += 1  # not in any requested segment -> drop
+                    continue
+                if per_seg is not None and seg and seg_counts.get(seg, 0) >= per_seg:
+                    continue  # this segment's fair share is full -> keep results balanced
+                # Canonical identity (email -> phone -> name+location): the same
+                # person under two name spellings stores once per run.
+                if ff.add_record(run_id, record_key(row) or "", page_url, row, now_iso()):
+                    added += 1
+                    kept += 1
+                    if seg:
+                        seg_counts[seg] = seg_counts.get(seg, 0) + 1
+            extracted_urls.append(page_url)
+            _record({"kind": "extract", "url": page_url, "status": "extracted",
+                     "fetched": 0, "data_pages": dp_count, "records": kept,
+                     "note": f"+{added} record(s) ({kept} total)"})
+            return added
 
-    def _target_met() -> bool:
-        # Stop at the overall target; per-segment caps (per_seg) keep it balanced
-        # so no single segment hogs the budget. This honors a small target like 5
-        # (which can't divide evenly across the segments) without overshooting.
-        return target is not None and kept >= target
+        def _target_met() -> bool:
+            # Stop at the overall target; per-segment caps (per_seg) keep it balanced
+            # so no single segment hogs the budget. This honors a small target like 5
+            # (which can't divide evenly across the segments) without overshooting.
+            return target is not None and kept >= target
 
-    def _needed_segments() -> set:
-        # Segments still under their per-segment cap. With no cap (no target) all
-        # segments are "needed" -> the crawl skips nothing.
-        if per_seg is None:
-            return set(segs)
-        return {s for s in segs if seg_counts.get(s, 0) < per_seg}
+        def _needed_segments() -> set:
+            # Segments still under their per-segment cap. With no cap (no target) all
+            # segments are "needed" -> the crawl skips nothing.
+            if per_seg is None:
+                return set(segs)
+            return {s for s in segs if seg_counts.get(s, 0) < per_seg}
 
-    # Standard mode keeps each data page's HTML so the post-crawl extraction
-    # pass reuses it instead of paying a second fetch (~80s/page on real runs).
-    page_cache: dict[str, str] = {}
+        # Standard mode keeps each data page's HTML so the post-crawl extraction
+        # pass reuses it instead of paying a second fetch (~80s/page on real runs).
+        page_cache: dict[str, str] = {}
 
-    if target is not None:
-        def on_data_page(page_url, html, verdict):  # noqa: ANN001 - simple callback
-            _extract_page(page_url, html)
-            return not _target_met()  # returning False stops the crawl
-        # Safety cap: the callback stops early once balanced; this only bounds the
-        # worst case where some segment can never be filled.
-        max_pages = max(max_pages, 40)
-    elif extract:
-        def on_data_page(page_url, html, verdict):  # noqa: ANN001 - simple callback
-            page_cache[page_url] = html  # cache only; extraction ranks pages later
-            return True
-    else:
-        on_data_page = None
-
-    crawler = DiscoveryCrawler(
-        intent, client, max_pages=max_pages, max_depth=max_depth,
-        same_domain=same_domain, on_event=_record, on_data_page=on_data_page,
-        needed_segments=(_needed_segments if (target is not None and segs) else None),
-        should_stop=should_stop,
-    )
-    result = crawler.run(url)
-
-    ts = _ts()
-    manifest = {
-        "seed": url, "prompt": prompt, "states": states,
-        "intent": intent.model_dump(), "columns": columns,
-        "stats": result.stats,
-        "data_pages": [p.__dict__ for p in result.data_pages],
-        "visited": result.visited,
-    }
-    man_path = config.RUNS_DIR / f"crawl_{ts}.json"
-    man_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-    print(f"\nDiscovered {len(result.data_pages)} data page(s) "
-          f"(fetched {result.stats['pages_fetched']}, "
-          f"blocked {result.stats['blocked']}, errors {result.stats['errors']}, "
-          f"LLM calls {result.stats['llm_calls']}). Columns: "
-          f"{[h for h, _ in columns]}")
-    for p in sorted(result.data_pages, key=lambda x: -x.score):
-        print(f"  [{p.score:.2f}] ~{p.estimated_records:>3} recs  {p.url}")
-    print(f"\nCrawl manifest: {man_path}")
-
-    out: dict = {"manifest": str(man_path), "stats": result.stats,
-                 "columns": columns, "data_page_urls": result.data_page_urls}
-
-    if not extract:
-        return out
-
-    if target is None:
-        # Standard mode: extract from the most COMPLETE pages first (#2) -- those
-        # where the classifier saw the most requested fields -- ties broken by
-        # crawl score. HTML cached during discovery is reused; only pages that
-        # somehow missed the cache are re-fetched. Target mode already extracted
-        # during discovery via the callback.
-        if result.data_page_urls:
-            ranked = sorted(result.data_pages,
-                            key=lambda p: (len(p.fields_found), p.score), reverse=True)
-            pages_to_extract = [p.url for p in ranked][:max_extracts]
-            if len(result.data_page_urls) > len(pages_to_extract):
-                log.info("maxExtracts=%d: extracting %d of %d discovered pages",
-                         max_extracts, len(pages_to_extract), len(result.data_page_urls))
-            fetcher = None
-            for page_url in pages_to_extract:
-                if should_stop is not None and should_stop():
-                    log.info("extraction ejected by user after %d page(s)", len(extracted_urls))
-                    break
-                html = page_cache.get(page_url)
-                if html is None:
-                    if fetcher is None:
-                        fetcher = make_fetcher()
-                    res = fetcher.get(page_url)
-                    if not res.ok:
-                        log.info("extract skip %s (%s)", page_url, res.reason[:80])
-                        continue
-                    html = res.content
+        if target is not None:
+            def on_data_page(page_url, html, verdict):  # noqa: ANN001 - simple callback
                 _extract_page(page_url, html)
+                return not _target_met()  # returning False stops the crawl
+            # Safety cap: the callback stops early once balanced; this only bounds the
+            # worst case where some segment can never be filled.
+            max_pages = max(max_pages, 40)
+        elif extract:
+            def on_data_page(page_url, html, verdict):  # noqa: ANN001 - simple callback
+                page_cache[page_url] = html  # cache only; extraction ranks pages later
+                return True
         else:
-            log.info("no data pages discovered; recording crawl with 0 records")
-    elif _target_met():
-        log.info("record target met: %d records%s; crawl stopped early", kept,
-                 (" (balanced " + ", ".join(f"{s}:{seg_counts[s]}" for s in segs) + ")") if segs else "")
-    else:
-        log.info("record target not met: %d/%d records%s (crawl exhausted)", kept, target,
-                 (" — per-segment " + ", ".join(f"{s}:{seg_counts[s]}" for s in segs)) if segs else "")
+            on_data_page = None
 
-    # Field coverage (#2): which requested fields were ever seen on a data page,
-    # and which were never found anywhere -- so the user learns up front that a
-    # source simply doesn't publish (e.g.) email/phone, instead of guessing.
-    seen_fields = set()
-    for p in result.data_pages:
-        seen_fields.update(f.strip().lower() for f in p.fields_found)
-    requested_headers = [h for h, k in columns if k != "source_url"]
-    missing_fields = [h for h in requested_headers if h.lower() not in seen_fields]
+        crawler = DiscoveryCrawler(
+            intent, client, max_pages=max_pages, max_depth=max_depth,
+            same_domain=same_domain, on_event=_record, on_data_page=on_data_page,
+            needed_segments=(_needed_segments if (target is not None and segs) else None),
+            should_stop=should_stop,
+        )
+        result = crawler.run(url)
 
-    ex_stats = {"records": kept, "data_pages": len(result.data_pages),
-                "extracted_pages": len(extracted_urls),
-                "target_records": target,
-                "target_met": bool(target is not None and _target_met()),
-                "segment_kind": intent.segment_kind,
-                "segment_counts": dict(seg_counts),
-                "dropped_offtarget": dropped_offtarget,
-                "pages_fetched": result.stats.get("pages_fetched", 0),
-                "blocked": result.stats.get("blocked", 0),
-                "errors": result.stats.get("errors", 0),
-                "columns": [h for h, _ in columns], "run_id": run_id,
-                "llm_calls": client.calls,
-                # Stopped early by the user's Eject button (partial results kept).
-                "ejected": bool(result.stats.get("ejected") or (should_stop and should_stop())),
-                "started": result.stats.get("started"),
-                "finished": result.stats.get("finished"),
-                "engine": result.stats.get("engine"),
-                "model": result.stats.get("model"),
-                # Why a crawl found nothing, + the per-URL outcomes behind it.
-                "diagnosis": diagnose(result),
-                "field_coverage": {"found": sorted(seen_fields),
-                                   "missing": missing_fields},
-                # Full per-step trace for history traceability (bounded for size).
-                "visited": result.visited[:200]}
-    if missing_fields:
-        log.info("field coverage: %d/%d requested fields never appeared on any "
-                 "data page (likely not published by this source): %s",
-                 len(missing_fields), len(requested_headers), ", ".join(missing_fields))
-    ff.finish_run(run_id, now_iso(), ex_stats, timeline=_timeline_payload())
-    out["extract_stats"] = ex_stats
-    out["run_id"] = run_id
-    print(f"\nExtraction: {kept} record(s) into {len(columns)} columns.")
-
-    if export_after and kept:
-        rows = ff.records_for_run(run_id)
-        exp = config.DATA_DIR / "exports"
-        slug = re.sub(r"[^a-z0-9]+", "_", (intent.entity or "records").lower()).strip("_")
-        paths = {
-            "xlsx": dynamic_exporter.write_xlsx(columns, rows, exp / f"{slug}_{ts}.xlsx"),
-            "csv": dynamic_exporter.write_csv(columns, rows, exp / f"{slug}_{ts}.csv"),
-            "jsonl": dynamic_exporter.write_jsonl(columns, rows, exp / f"{slug}_{ts}.jsonl"),
+        ts = _ts()
+        manifest = {
+            "seed": url, "prompt": prompt, "states": states,
+            "intent": intent.model_dump(), "columns": columns,
+            "stats": result.stats,
+            "data_pages": [p.__dict__ for p in result.data_pages],
+            "visited": result.visited,
         }
-        for k, v in paths.items():
-            print(f"  {k}: {v}")
-        out["export"] = {"paths": paths, "exported": kept}
+        man_path = config.RUNS_DIR / f"crawl_{ts}.json"
+        man_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    if own_store:
-        ff.close()
-    return out
+        print(f"\nDiscovered {len(result.data_pages)} data page(s) "
+              f"(fetched {result.stats['pages_fetched']}, "
+              f"blocked {result.stats['blocked']}, errors {result.stats['errors']}, "
+              f"LLM calls {result.stats['llm_calls']}). Columns: "
+              f"{[h for h, _ in columns]}")
+        for p in sorted(result.data_pages, key=lambda x: -x.score):
+            print(f"  [{p.score:.2f}] ~{p.estimated_records:>3} recs  {p.url}")
+        print(f"\nCrawl manifest: {man_path}")
+
+        out: dict = {"manifest": str(man_path), "stats": result.stats,
+                     "columns": columns, "data_page_urls": result.data_page_urls}
+
+        if not extract:
+            return out
+
+        if target is None:
+            # Standard mode: extract from the most COMPLETE pages first (#2) -- those
+            # where the classifier saw the most requested fields -- ties broken by
+            # crawl score. HTML cached during discovery is reused; only pages that
+            # somehow missed the cache are re-fetched. Target mode already extracted
+            # during discovery via the callback.
+            if result.data_page_urls:
+                ranked = sorted(result.data_pages,
+                                key=lambda p: (len(p.fields_found), p.score), reverse=True)
+                pages_to_extract = [p.url for p in ranked][:max_extracts]
+                if len(result.data_page_urls) > len(pages_to_extract):
+                    log.info("maxExtracts=%d: extracting %d of %d discovered pages",
+                             max_extracts, len(pages_to_extract), len(result.data_page_urls))
+                fetcher = None
+                for page_url in pages_to_extract:
+                    if should_stop is not None and should_stop():
+                        log.info("extraction ejected by user after %d page(s)", len(extracted_urls))
+                        break
+                    html = page_cache.get(page_url)
+                    if html is None:
+                        if fetcher is None:
+                            fetcher = make_fetcher()
+                        res = fetcher.get(page_url)
+                        if not res.ok:
+                            log.info("extract skip %s (%s)", page_url, res.reason[:80])
+                            continue
+                        html = res.content
+                    _extract_page(page_url, html)
+            else:
+                log.info("no data pages discovered; recording crawl with 0 records")
+        elif _target_met():
+            log.info("record target met: %d records%s; crawl stopped early", kept,
+                     (" (balanced " + ", ".join(f"{s}:{seg_counts[s]}" for s in segs) + ")") if segs else "")
+        else:
+            log.info("record target not met: %d/%d records%s (crawl exhausted)", kept, target,
+                     (" — per-segment " + ", ".join(f"{s}:{seg_counts[s]}" for s in segs)) if segs else "")
+
+        # Field coverage (#2): which requested fields were ever seen on a data page,
+        # and which were never found anywhere -- so the user learns up front that a
+        # source simply doesn't publish (e.g.) email/phone, instead of guessing.
+        seen_fields = set()
+        for p in result.data_pages:
+            seen_fields.update(f.strip().lower() for f in p.fields_found)
+        requested_headers = [h for h, k in columns if k != "source_url"]
+        missing_fields = [h for h in requested_headers if h.lower() not in seen_fields]
+
+        ex_stats = {"records": kept, "data_pages": len(result.data_pages),
+                    "extracted_pages": len(extracted_urls),
+                    "target_records": target,
+                    "target_met": bool(target is not None and _target_met()),
+                    "segment_kind": intent.segment_kind,
+                    "segment_counts": dict(seg_counts),
+                    "dropped_offtarget": dropped_offtarget,
+                    "pages_fetched": result.stats.get("pages_fetched", 0),
+                    "blocked": result.stats.get("blocked", 0),
+                    "errors": result.stats.get("errors", 0),
+                    "columns": [h for h, _ in columns], "run_id": run_id,
+                    "llm_calls": client.calls,
+                    # Stopped early by the user's Eject button (partial results kept).
+                    "ejected": bool(result.stats.get("ejected") or (should_stop and should_stop())),
+                    "started": result.stats.get("started"),
+                    "finished": result.stats.get("finished"),
+                    "engine": result.stats.get("engine"),
+                    "model": result.stats.get("model"),
+                    # Why a crawl found nothing, + the per-URL outcomes behind it.
+                    "diagnosis": diagnose(result),
+                    "field_coverage": {"found": sorted(seen_fields),
+                                       "missing": missing_fields},
+                    # Full per-step trace for history traceability (bounded for size).
+                    "visited": result.visited[:200]}
+        if missing_fields:
+            log.info("field coverage: %d/%d requested fields never appeared on any "
+                     "data page (likely not published by this source): %s",
+                     len(missing_fields), len(requested_headers), ", ".join(missing_fields))
+        ff.finish_run(run_id, now_iso(), ex_stats, timeline=_timeline_payload())
+        out["extract_stats"] = ex_stats
+        out["run_id"] = run_id
+        print(f"\nExtraction: {kept} record(s) into {len(columns)} columns.")
+
+        if export_after and kept:
+            rows = ff.records_for_run(run_id)
+            exp = config.DATA_DIR / "exports"
+            slug = re.sub(r"[^a-z0-9]+", "_", (intent.entity or "records").lower()).strip("_")
+            paths = {
+                "xlsx": dynamic_exporter.write_xlsx(columns, rows, exp / f"{slug}_{ts}.xlsx"),
+                "csv": dynamic_exporter.write_csv(columns, rows, exp / f"{slug}_{ts}.csv"),
+                "jsonl": dynamic_exporter.write_jsonl(columns, rows, exp / f"{slug}_{ts}.jsonl"),
+            }
+            for k, v in paths.items():
+                print(f"  {k}: {v}")
+            out["export"] = {"paths": paths, "exported": kept}
+
+        return out
+    except Exception as exc:  # noqa: BLE001 - persist a partial timeline, then re-raise
+        if ff is not None and run_id is not None:
+            try:
+                ff.finish_run(run_id, now_iso(), {
+                    "records": ff.count_for_run(run_id),
+                    "error": str(exc),
+                    "diagnosis": f"Crawl errored: {exc}",
+                    "finished": now_iso(),
+                }, timeline=_timeline_payload())
+            except Exception:  # noqa: BLE001 - never mask the original failure
+                log.warning("could not persist partial timeline for errored run %s", run_id)
+        raise
+    finally:
+        if own_store and ff is not None:
+            ff.close()
 
 
 if __name__ == "__main__":
