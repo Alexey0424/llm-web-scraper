@@ -134,12 +134,12 @@
     a { color: var(--signal); text-decoration: none; }
     a:hover { text-decoration: underline; }
     ::selection { background: var(--accent-dim-2); }
-    /* Themed scrollbars on the inner lists (timeline, traces, streams). */
-    .stream, .trace-steps, .tbl-scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
-    .stream::-webkit-scrollbar, .trace-steps::-webkit-scrollbar, .tbl-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-    .stream::-webkit-scrollbar-thumb, .trace-steps::-webkit-scrollbar-thumb, .tbl-scroll::-webkit-scrollbar-thumb {
+    /* Themed scrollbars on the inner lists (timeline, streams). */
+    .stream, .tbl-scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+    .stream::-webkit-scrollbar, .tbl-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .stream::-webkit-scrollbar-thumb, .tbl-scroll::-webkit-scrollbar-thumb {
       background: var(--border-strong); border-radius: 99px; }
-    .stream::-webkit-scrollbar-track, .trace-steps::-webkit-scrollbar-track, .tbl-scroll::-webkit-scrollbar-track { background: transparent; }
+    .stream::-webkit-scrollbar-track, .tbl-scroll::-webkit-scrollbar-track { background: transparent; }
 
     /* ---- Top bar -------------------------------------------------------- */
     .topbar {
@@ -450,18 +450,10 @@
     .timeline .st { font-family: var(--mono); font-size: .78rem; color: var(--signal); white-space: nowrap; }
     .timeline .st.zero { color: var(--warn); }
 
-    .trace-box { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md);
-      padding: var(--sp-4); }
     .trace-stats { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-bottom: var(--sp-3); }
     .trace-stats .kv { display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 9px; border-radius: var(--r-pill);
       background: var(--surface); border: 1px solid var(--border); font-size: .78rem; color: var(--muted); }
     .trace-stats .kv b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 650; }
-    .trace-steps { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; }
-    .trace-steps li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--border); }
-    .trace-steps li:last-child { border-bottom: 0; }
-    .trace-steps .s-url { font-family: var(--mono); font-size: .76rem; color: var(--muted); flex: 1; min-width: 0;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .trace-steps .s-note { font-size: .78rem; color: var(--text); white-space: normal; max-width: 46ch; }
     .trace-empty { color: var(--muted); font-size: .82rem; }
 
     footer.app { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
