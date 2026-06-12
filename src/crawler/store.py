@@ -42,6 +42,9 @@ class FreeFormStore:
         cols = {c[1] for c in self.conn.execute("PRAGMA table_info(ff_runs)").fetchall()}
         if "batch_id" not in cols:
             self.conn.execute("ALTER TABLE ff_runs ADD COLUMN batch_id TEXT")
+        # Per-run timeline (full timed event stream) for history replay.
+        if "timeline_json" not in cols:
+            self.conn.execute("ALTER TABLE ff_runs ADD COLUMN timeline_json TEXT")
         self.conn.commit()
 
     # -- runs ---------------------------------------------------------------
@@ -55,10 +58,12 @@ class FreeFormStore:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def finish_run(self, run_id: int, finished: str, stats: dict) -> None:
+    def finish_run(self, run_id: int, finished: str, stats: dict,
+                   timeline: dict | None = None) -> None:
         self.conn.execute(
-            "UPDATE ff_runs SET finished=?, stats_json=? WHERE id=?",
-            (finished, json.dumps(stats), run_id),
+            "UPDATE ff_runs SET finished=?, stats_json=?, timeline_json=? WHERE id=?",
+            (finished, json.dumps(stats),
+             json.dumps(timeline) if timeline is not None else None, run_id),
         )
         self.conn.commit()
 
