@@ -27,10 +27,11 @@ next to the existing **Results** (records table) tab.
 
 ## Non-goals
 
-- Saving a timeline for runs that error mid-crawl (they never reach
-  `finish_run`; out of scope for v1).
 - Backfilling timelines for crawls already in the database.
 - Any change to the live-crawl experience itself.
+- Saving a timeline for failures that happen **before the run row exists**
+  (i.e. during intent planning, before `start_run`) — there is no run to attach
+  it to. Every failure after the run is created is captured (see Error path).
 
 ## Approach (chosen: A)
 
@@ -66,6 +67,27 @@ shape the UI already renders:
   `{"events": [...], "truncated": bool, "total": <int>}`.
 - The buffer is scoped per `crawl()` call, which is exactly one run — so each
   job in a bulk/queue batch naturally gets its own timeline.
+- The wrapper appends every event the live feed shows, **skipping `kind=="plan"`**
+  — the live UI intercepts the plan event into its own box rather than the
+  stream, and the Timeline tab mirrors that. The buffer starts collecting from
+  the top of `crawl()`, so planning-phase LLM calls are included once the run
+  exists.
+
+### 1a. Error path — `src/main.py`
+
+Today `crawl()` lets exceptions propagate to `app.py`, leaving the DB run row
+unfinished (no timeline). To capture a partial timeline on failure:
+
+- Wrap the body **after `start_run`** (the crawl + extraction) in `try/except`.
+- On exception, if a run row exists, call `finish_run` with the partial
+  timeline and a minimal error-marked stats blob (`records` collected so far,
+  `error`, and a `diagnosis` like *"Crawl errored: <message>"*), then
+  **re-raise** so `app.py` still surfaces the error to the UI exactly as it does
+  now (state=error, traceback, culprit frame).
+- The persist-on-error call is itself wrapped so a secondary failure while
+  saving never masks the original error.
+- Net effect: an errored run now appears in history finished, with whatever
+  records it managed to extract and a full partial timeline.
 
 ### 2. Persist — `src/crawler/store.py`
 
@@ -73,8 +95,9 @@ shape the UI already renders:
   same "ALTER if missing" pattern already used for `batch_id`.
 - `finish_run(run_id, finished, stats, timeline=None)` gains an optional
   `timeline` argument written into `timeline_json`.
-- Runs that never call `finish_run` (errored mid-crawl) and pre-existing runs
-  leave the column `NULL`.
+- Pre-existing runs (and failures before the run row is created) leave the
+  column `NULL`. Errored-mid-crawl runs now reach `finish_run` via the error
+  path (§1a), so they keep their partial timeline.
 
 ### 3. Serve — `src/web/app.py`
 
@@ -128,7 +151,11 @@ crawl() emits events ──► wrapped on_event ──► in-run timeline buffer
 
 ## Edge cases
 
-- **Errored run:** no `finish_run`, so `timeline_json` is NULL → empty state.
+- **Errored run:** the error path (§1a) finishes the run with its partial
+  timeline + an error diagnosis → Timeline tab replays what happened up to the
+  failure.
+- **Failure before the run exists** (planning error): no run row → nothing to
+  attach; behaves as today.
 - **Pre-existing run:** column NULL → empty state.
 - **Batch job:** one `crawl()` per job → one timeline per run row; revisiting
   any job in the batch shows that job's own timeline.
@@ -144,6 +171,9 @@ crawl() emits events ──► wrapped on_event ──► in-run timeline buffer
   object for a run that has one, and `timeline: null` for one that doesn't.
 - Migration: opening an old DB (no `timeline_json` column) adds the column
   without error and existing rows read back NULL.
+- Error path: a `crawl()` that raises after `start_run` still finishes the run
+  with a non-NULL timeline and an error diagnosis, and the exception still
+  propagates to the caller.
 
 ## Flow-diagram sync
 
