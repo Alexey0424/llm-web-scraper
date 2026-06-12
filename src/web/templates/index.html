@@ -993,7 +993,11 @@
       if (!id) { if (empty) empty.hidden = false; return; }
       fetch('/run/' + id + '/trace').then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { if (empty) { empty.textContent = d.error || 'Could not load timeline'; empty.hidden = false; } return; }
-        if (head) head.innerHTML = kvChips(d.info);
+        if (head) {
+          var info = d.info || {};
+          if (info.records == null) info = Object.assign({}, info, { records: d.rows });
+          head.innerHTML = kvChips(info);
+        }
         var tl = d.timeline;
         if (!tl || !tl.events || !tl.events.length) { if (empty) empty.hidden = false; return; }
         renderCrawlStream(tl.events, stream);
