@@ -156,3 +156,25 @@ def test_delete_and_clear_exports(client, tmp_path):
     assert not (exp / "one.xlsx").exists()
     assert client.post("/clear-exports").get_json()["ok"]
     assert not (exp / "two.xlsx").exists()
+
+
+def test_run_trace_includes_timeline(client, tmp_path):
+    s = FreeFormStore(tmp_path / "ui.sqlite")
+    rid = s.start_run("https://a.com", "p", [("Name", "name")], now_iso())
+    tl = {"events": [{"kind": "visit", "seconds": 0.5, "url": "https://a.com",
+                      "status": "ok", "note": "seed"}],
+          "truncated": False, "total": 1}
+    s.finish_run(rid, now_iso(), {"records": 0}, timeline=tl)
+    s.close()
+    j = client.get(f"/run/{rid}/trace").get_json()
+    assert j["ok"] and j["timeline"]["total"] == 1
+    assert j["timeline"]["events"][0]["kind"] == "visit"
+
+
+def test_run_trace_timeline_null_when_absent(client, tmp_path):
+    s = FreeFormStore(tmp_path / "ui.sqlite")
+    rid = s.start_run("https://a.com", "p", [("Name", "name")], now_iso())
+    s.finish_run(rid, now_iso(), {"records": 0})  # no timeline
+    s.close()
+    j = client.get(f"/run/{rid}/trace").get_json()
+    assert j["ok"] and j["timeline"] is None

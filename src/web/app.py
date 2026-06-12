@@ -545,6 +545,7 @@ def create_app() -> Flask:
             stats = json.loads(run.get("stats_json") or "{}")
             columns = json.loads(run.get("columns_json") or "[]")
             rows = ff.count_for_run(run_id)
+            timeline = json.loads(run.get("timeline_json") or "null")
         finally:
             ff.close()
         info = {k: stats.get(k) for k in (
@@ -561,6 +562,7 @@ def create_app() -> Flask:
             info=info,
             field_coverage=stats.get("field_coverage") or {},
             steps=stats.get("visited") or [],
+            timeline=timeline,
         )
 
     def _delete_all_exports() -> int:
