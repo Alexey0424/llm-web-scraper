@@ -970,7 +970,10 @@
         if (head) {
           var info = d.info || {};
           if (info.records == null) info = Object.assign({}, info, { records: d.rows });
-          head.innerHTML = kvChips(info);
+          var diag = info.diagnosis
+            ? '<p class="meta" style="flex-basis:100%; margin:0 0 6px; white-space:normal">' + esc(info.diagnosis) + '</p>'
+            : '';
+          head.innerHTML = diag + kvChips(info);
         }
         var tl = d.timeline;
         if (!tl || !tl.events || !tl.events.length) { if (empty) empty.hidden = false; return; }
