@@ -1,10 +1,16 @@
-"""Fetch retry policy: 4xx responses must NOT be retried.
+"""Fetch retry policy.
 
-Re-hitting a 403/404 with the same fingerprint can't succeed and looks like
-hammering to anti-bot systems (it worsens IP reputation and can get the whole
-crawl blocked). Only transient failures — network errors and 5xx — are worth
-retrying. The sitemap probe must also come AFTER the seed page, so the
-crawler's first contact with a site is the URL the user gave.
+Anti-bot front-ends (e.g. PerimeterX on Zillow) commonly answer the FIRST hit
+of a fresh navigation with a transient 403/429 challenge, then serve 200 on a
+retry once the browser session is warm — this is exactly what made run #44
+work, and removing the retry broke run #57. So 403/429 (and 5xx, and network
+errors) ARE retried with backoff. Only genuinely permanent statuses (404, 410,
+400, 401, 405) are not, since re-requesting them can never change the answer.
+A crawl that keeps failing is bounded instead by the discovery loop's
+consecutive-failure circuit breaker, not by refusing the first retry.
+
+The sitemap probe must also come only as a rescue (never the first contact),
+so the crawler's first request to a site is the URL the user gave.
 """
 
 from __future__ import annotations
@@ -37,22 +43,31 @@ class CountingFetcher(BaseFetcher):
         return out, "<html><body>ok</body></html>"
 
 
-def test_403_is_not_retried():
-    f = CountingFetcher([403])
+def test_transient_403_challenge_is_retried_then_recovers():
+    # The #44 behavior: PerimeterX 403s the first hit, serves 200 on retry.
+    f = CountingFetcher([403, 200])
+    res = f.get("https://x.test/page")
+    assert res.ok
+    assert f.attempts == 2
+
+
+def test_429_is_retried_then_recovers():
+    f = CountingFetcher([429, 200])
+    res = f.get("https://x.test/page")
+    assert res.ok
+    assert f.attempts == 2
+
+
+def test_persistent_403_eventually_gives_up():
+    f = CountingFetcher([403, 403, 403, 403])  # never recovers
     res = f.get("https://x.test/page")
     assert not res.ok and "403" in res.reason
-    assert f.attempts == 1
+    assert f.attempts == 4  # initial + max_retries (3)
 
 
 def test_404_is_not_retried():
+    # Permanent: re-requesting can't change the answer.
     f = CountingFetcher([404])
-    res = f.get("https://x.test/page")
-    assert not res.ok
-    assert f.attempts == 1
-
-
-def test_429_is_not_hammered():
-    f = CountingFetcher([429])
     res = f.get("https://x.test/page")
     assert not res.ok
     assert f.attempts == 1

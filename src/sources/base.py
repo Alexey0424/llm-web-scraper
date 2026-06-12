@@ -44,13 +44,19 @@ class FetchHTTPError(RuntimeError):
         super().__init__(f"HTTP {status}")
 
 
+# HTTP statuses that re-requesting can never fix, so a retry is pointless.
+# 403/429 are deliberately NOT here: anti-bot front-ends (PerimeterX, etc.)
+# 403/429 the first hit of a fresh navigation as a CHALLENGE and then serve the
+# page on a warm retry — retrying those is what makes protected sites work
+# (proven by run #44; removing it broke #57). A crawl that keeps failing is
+# bounded by the discovery loop's consecutive-failure circuit breaker instead.
+_PERMANENT_STATUS = {400, 401, 404, 405, 410}
+
+
 def _retryable(exc: BaseException) -> bool:
-    """Only transient failures are worth a retry. A 4xx (403/404/429/...) will
-    answer the same way to the same fingerprint — and re-hitting an anti-bot
-    403 in quick succession reads as hammering and worsens IP reputation."""
     if isinstance(exc, FetchHTTPError):
-        return exc.status >= 500
-    return True
+        return exc.status not in _PERMANENT_STATUS
+    return True  # network/transport errors are transient → retry
 
 
 BLOCKED_PAGE_MARKERS = (
