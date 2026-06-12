@@ -102,5 +102,9 @@ def test_successful_crawl_persists_timeline(site):
     import json
     tl = json.loads(run["timeline_json"])
     assert tl is not None and tl["truncated"] is False
-    # Extraction emits at least one timed "extract" event into the stream.
+    assert tl["total"] >= 1
+    # Extraction emits a timed "extract" event into the stream...
     assert any(e["kind"] == "extract" for e in tl["events"])
+    # ...and the crawler-side wiring (DiscoveryCrawler on_event=_record) also
+    # captured at least one non-extract (fetch/visit) event.
+    assert any(e["kind"] != "extract" for e in tl["events"])
