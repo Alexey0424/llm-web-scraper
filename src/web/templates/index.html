@@ -450,8 +450,6 @@
     .timeline .st { font-family: var(--mono); font-size: .78rem; color: var(--signal); white-space: nowrap; }
     .timeline .st.zero { color: var(--warn); }
 
-    .trace-panel { flex-basis: 100%; width: 100%; margin-top: var(--sp-2); }
-    .trace-panel[hidden] { display: none; }
     .trace-box { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md);
       padding: var(--sp-4); }
     .trace-stats { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-bottom: var(--sp-3); }
@@ -797,18 +795,7 @@
       <div class="empty" style="padding:var(--sp-5)">
         <b>No records extracted for this crawl.</b>
         {% if ff_stats.diagnosis %}<p style="color:var(--warn); max-width:70ch">⚠ {{ ff_stats.diagnosis }}</p>{% endif %}
-        {% if ff_stats.visited %}
-          <h3 class="sub-h" style="justify-content:center">What happened, page by page</h3>
-          <ul class="files" style="text-align:left; max-width:760px; margin:0 auto">
-            {% for v in ff_stats.visited %}
-              <li>
-                <span class="tag tag--{{ 'ok' if v.status in ['ok','data_page'] else ('warn' if v.status=='blocked' else 'err') }}"><span class="dot"></span>{{ v.status }}</span>
-                <span class="url" style="flex:1" title="{{ v.url }}">{{ v.url }}</span>
-                <span class="meta" style="white-space:normal; max-width:38ch; text-align:left">{{ v.note }}</span>
-              </li>
-            {% endfor %}
-          </ul>
-        {% endif %}
+        <p class="meta" style="white-space:normal">Open the <b>Timeline</b> tab above to see what happened, page by page.</p>
       </div>
     {% endif %}
     </div><!-- /run-view results -->
@@ -858,14 +845,9 @@
                 <span>Excel</span>
               </a>
               {% endif %}
-              <button type="button" class="btn-subtle btn-sm run-trace" data-run="{{ r.id }}" aria-expanded="false" title="Show crawl info + each step of the process">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
-                <span>Trace</span>
-              </button>
               <button type="button" class="icon-del run-del" data-run="{{ r.id }}" title="Delete this crawl" aria-label="Delete crawl #{{ r.id }}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m-9 0v14a1 1 0 001 1h8a1 1 0 001-1V6"/></svg>
               </button>
-              <div class="trace-panel" data-trace="{{ r.id }}" hidden></div>
             </li>
           {% endfor %}
         </ul>
@@ -1535,52 +1517,8 @@
       }).catch(function () { toast('Delete failed', 'error'); });
       return;
     }
-    var trc = e.target.closest('.run-trace');
-    if (trc) { toggleTrace(trc); return; }
   });
 
-  /* ---- Traceability: crawl info + each step of the process ------- */
-  function stepStatusClass(st) {
-    return st === 'data_page' || st === 'ok' ? 'ok' : (st === 'blocked' ? 'warn' : 'err');
-  }
-  function renderTrace(d) {
-    function kv(label, val) {
-      return (val === null || val === undefined || val === '') ? '' :
-        '<span class="kv">' + esc(label) + ' <b>' + esc(val) + '</b></span>';
-    }
-    var i = d.info || {};
-    var stats = [
-      kv('records', d.rows), kv('pages fetched', i.pages_fetched),
-      kv('data pages', i.data_pages), kv('blocked', i.blocked),
-      kv('errors', i.errors), kv('LLM calls', i.llm_calls),
-      kv('target', i.target_records), kv('model', i.model),
-      (i.ejected ? '<span class="kv"><b style="color:var(--warn)">ejected</b></span>' : '')
-    ].join('');
-    var steps = (d.steps || []).map(function (v) {
-      return '<li><span class="tag tag--' + stepStatusClass(v.status) + '"><span class="dot"></span>' +
-        esc(v.status || '') + '</span><span class="s-url" title="' + esc(v.url) + '">' + esc(v.url) + '</span>' +
-        (v.note ? '<span class="s-note">' + esc(v.note) + '</span>' : '') + '</li>';
-    }).join('');
-    var diag = i.diagnosis ? '<p class="meta" style="margin:0 0 8px; white-space:normal">' + esc(i.diagnosis) + '</p>' : '';
-    return '<div class="trace-box">' + diag + '<div class="trace-stats">' + stats + '</div>' +
-      '<div class="block-label">Steps (' + (d.steps || []).length + ')</div>' +
-      (steps ? '<ul class="trace-steps">' + steps + '</ul>'
-             : '<p class="trace-empty">No per-step trace was recorded for this crawl.</p>') + '</div>';
-  }
-  function toggleTrace(btn) {
-    var id = btn.getAttribute('data-run');
-    var li = btn.closest('li');
-    var panel = li ? li.querySelector('.trace-panel[data-trace="' + id + '"]') : null;
-    if (!panel) return;
-    if (!panel.hidden) { panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); return; }
-    btn.setAttribute('aria-expanded', 'true');
-    panel.hidden = false;
-    panel.innerHTML = '<div class="trace-box trace-empty">Loading trace…</div>';
-    fetch('/run/' + id + '/trace').then(function (r) { return r.json(); }).then(function (d) {
-      if (!d.ok) { panel.innerHTML = '<div class="trace-box trace-empty">' + esc(d.error || 'Could not load trace') + '</div>'; return; }
-      panel.innerHTML = renderTrace(d);
-    }).catch(function () { panel.innerHTML = '<div class="trace-box trace-empty">Network error loading trace</div>'; });
-  }
   var clearHistBtn = $('#clear-history-btn');
   if (clearHistBtn) clearHistBtn.addEventListener('click', function () {
     if (!confirm('Delete ALL crawl history? Exported files are kept.')) return;
