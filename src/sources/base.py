@@ -177,14 +177,19 @@ class BaseFetcher:
         rate_limits = load_rate_limits()
         rl = rate_limits.get("defaults", {})
 
-        self.user_agent = rl.get(
-            "user_agent",
-            (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
+        # IMPROVED: Use a list of modern User-Agents to avoid fingerprinting
+        self.user_agents = rl.get(
+            "user_agents",
+            [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ],
         )
+        # Pick one randomly or rotate them
+        import random
+        self.user_agent = random.choice(self.user_agents)
+        
         self.timeout = rl.get("request_timeout_seconds", 30)
         self.max_retries = rl.get("max_retries", 3)
         self.backoff = rl.get("backoff_base_seconds", 1.5)
@@ -327,42 +332,51 @@ class ScraplingFetcher(BaseFetcher):
 
     def _raw_get(self, url: str) -> tuple[int, str]:
         """
-        Perform a Scrapling fetch.
-
-        This method intentionally does not fallback to httpx or any other engine.
+        Perform a Scrapling fetch with enhanced stealth parameters.
         """
+        # Common headers to look like a real browser
+        extra_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+
         if self.mode == "fast":
+            # Use impersonate to handle TLS/Header fingerprinting automatically
             page = Fetcher.get(
                 url,
-                impersonate="chrome",
+                impersonate="chrome", 
                 stealthy_headers=True,
-                timeout=self.timeout,  # seconds
+                timeout=self.timeout,
             )
 
         elif self.mode == "dynamic":
             kwargs: dict[str, Any] = {
                 "headless": True,
                 "network_idle": True,
-                "timeout": int(self.timeout * 1000),  # milliseconds
+                "timeout": int(self.timeout * 1000),
                 "useragent": self.user_agent,
+                "extra_headers": extra_headers, # Added headers
             }
-
             if self.wait_selector:
                 kwargs["wait_selector"] = self.wait_selector
-
             page = DynamicFetcher.fetch(url, **kwargs)
 
-        else:
+        else:  # mode == "stealth"
             kwargs = {
                 "headless": True,
                 "network_idle": True,
-                "timeout": int(self.timeout * 1000),  # milliseconds
+                "timeout": int(self.timeout * 1000),
                 "useragent": self.user_agent,
+                "extra_headers": extra_headers, # Added headers
             }
-
             if self.wait_selector:
                 kwargs["wait_selector"] = self.wait_selector
-
+            
+            # StealthyFetcher is the best bet for heavy anti-bot (Cloudflare/etc)
             page = StealthyFetcher.fetch(url, **kwargs)
 
         status = scrapling_response_status(page)
@@ -372,6 +386,7 @@ class ScraplingFetcher(BaseFetcher):
             raise FetchHTTPError(status)
 
         return status, text
+
 
 # Backward-compatible name for older project files.
 # This is NOT an httpx fallback. It points to ScraplingFetcher.
