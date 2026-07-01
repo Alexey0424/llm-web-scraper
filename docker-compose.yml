@@ -1,5 +1,5 @@
 services:
-  # Local LLM server for the Phase-1 discovery crawler (FetchFox-style).
+  # Local LLM server for the discovery crawler (FetchFox-style).
   # GPU-accelerated; models persist in the named volume so the 9.6 GB gemma4:e4b
   # pull happens once. Swap models with the OLLAMA_MODEL var (see .env).
   ollama:
@@ -39,16 +39,12 @@ services:
       - ./runs:/app/runs
       - ./config:/app/config
       - ./docs:/app/docs
-      # NOTE: the template xlsx is NOT mounted — it isn't in the repo, and a
-      # bind-mount of a missing path makes Docker create an empty directory that
-      # breaks template loading. Drop the real file in the project root and it is
-      # baked into the image via `COPY . .`, or re-add a mount once it exists.
     # Override the command at runtime, e.g.:
-    #   docker compose run --rm scraper inspect-template
-    #   docker compose run --rm scraper run --states NJ PA IN --quality-first --export
+    #   docker compose run --rm scraper crawl --url https://example.com \
+    #     --prompt "agents: full name, email, phone" --extract --export
     command: ["--help"]
 
-  # Web UI: one-click scraping + results + Excel export.
+  # Web UI: discovery crawls + results + Excel export.
   #   docker compose up ui   ->   open http://localhost:5000
   ui:
     build: .

@@ -1,4 +1,4 @@
-# Real-Estate Agent Scraper — container image.
+# Discovery Crawler — container image.
 # All project software runs inside this container.
 FROM python:3.10-slim
 
