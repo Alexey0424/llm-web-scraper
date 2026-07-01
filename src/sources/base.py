@@ -34,6 +34,7 @@ class FetchResult:
     content: str
     ok: bool
     reason: str = ""
+    status: int | None = None
 
 
 class FetchHTTPError(RuntimeError):
@@ -232,17 +233,25 @@ class BaseFetcher:
         @with_retry(max_retries=self.max_retries, base=self.backoff,
                     should_retry=_retryable)
         def _do() -> tuple[int, str]:
-            return self._raw_get(url)
+            status, text = self._raw_get(url)
+            # Raise here so @with_retry sees HTTP failures; _retryable
+            # retries transient anti-bot statuses (403/429) but not e.g. 404.
+            if status >= 400:
+                raise FetchHTTPError(status=status)
+            return status, text
 
         try:
             status, text = _do()
 
+            # A 200 can still be a "soft" block (CAPTCHA / challenge page):
+            # detect it from the content and report it, never solve it.
             blocked_reason = detect_blocked_page(text)
             if blocked_reason:
                 return FetchResult(
                     url=url,
                     content="",
                     ok=False,
+                    status=status,
                     reason=blocked_reason,
                 )
 
@@ -250,10 +259,12 @@ class BaseFetcher:
                 url=url,
                 content=text,
                 ok=True,
+                status=status,
             )
 
         except Exception as exc:
-            log.warning("fetch failed %s: %s", url, exc)
+            # Final failure after all retries are exhausted.
+            log.warning("fetch failed %s after retries: %s", url, exc)
 
             return FetchResult(
                 url=url,
@@ -331,60 +342,24 @@ class ScraplingFetcher(BaseFetcher):
             )
 
     def _raw_get(self, url: str) -> tuple[int, str]:
-        """
-        Perform a Scrapling fetch with enhanced stealth parameters.
-        """
-        # Common headers to look like a real browser
-        extra_headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-        }
-
+        # No hand-rolled extra_headers in browser modes: Scrapling/Playwright
+        # manage their own header set, and overriding it creates a
+        # header/TLS fingerprint mismatch that trips anti-bot checks.
         if self.mode == "fast":
-            # Use impersonate to handle TLS/Header fingerprinting automatically
-            page = Fetcher.get(
-                url,
-                impersonate="chrome", 
-                stealthy_headers=True,
-                timeout=self.timeout,
-            )
-
+            kwargs = {"impersonate": "chrome", "stealthy_headers": True}
+            page = Fetcher.get(url, timeout=self.timeout, **kwargs)
         elif self.mode == "dynamic":
-            kwargs: dict[str, Any] = {
-                "headless": True,
-                "network_idle": True,
-                "timeout": int(self.timeout * 1000),
-                "useragent": self.user_agent,
-                "extra_headers": extra_headers, # Added headers
-            }
-            if self.wait_selector:
-                kwargs["wait_selector"] = self.wait_selector
+            kwargs = {"headless": True, "network_idle": True, "useragent": self.user_agent}
             page = DynamicFetcher.fetch(url, **kwargs)
-
-        else:  # mode == "stealth"
-            kwargs = {
-                "headless": True,
-                "network_idle": True,
-                "timeout": int(self.timeout * 1000),
-                "useragent": self.user_agent,
-                "extra_headers": extra_headers, # Added headers
-            }
-            if self.wait_selector:
-                kwargs["wait_selector"] = self.wait_selector
-            
-            # StealthyFetcher is the best bet for heavy anti-bot (Cloudflare/etc)
+        else:  # stealth
+            kwargs = {"headless": True, "network_idle": True, "useragent": self.user_agent}
             page = StealthyFetcher.fetch(url, **kwargs)
 
         status = scrapling_response_status(page)
         text = scrapling_response_to_html(page)
 
-        if status >= 400:
-            raise FetchHTTPError(status)
-
+        # Status handling lives in BaseFetcher.get(), which owns the retry
+        # policy; here we just report what the server returned.
         return status, text
 
 

@@ -843,6 +843,16 @@
             </li>
           {% endfor %}
         </ul>
+        {% if ff_runs_total and ff_runs|length < ff_runs_total %}
+          <div style="text-align:center; padding:var(--sp-3) 0 4px">
+            <a class="btn-subtle btn-sm" id="load-more-runs"
+               href="?runs={{ ff_runs_limit + 20 }}{% if ff_sel_id %}&run={{ ff_sel_id }}{% endif %}#history-list"
+               title="Show more past crawls">
+              Load {{ [20, ff_runs_total - (ff_runs|length)]|min }} more
+              <span class="meta">({{ ff_runs|length }} of {{ ff_runs_total }})</span>
+            </a>
+          </div>
+        {% endif %}
       {% else %}
         <div class="empty" style="padding:var(--sp-5)">
           <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></span>

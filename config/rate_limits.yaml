@@ -3,7 +3,7 @@ defaults:
   min_delay_seconds: 4.0 # floor wait between requests to the same domain
   max_delay_seconds: 6.0 # ceiling; each wait is a random value in [min, max]
   max_concurrency_per_domain: 1
-  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.128 Safari/537.36"
   request_timeout_seconds: 30
   max_retries: 3
   backoff_base_seconds: 2.0

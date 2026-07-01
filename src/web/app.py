@@ -367,8 +367,14 @@ def create_app() -> Flask:
                         if files:
                             row["__seen_in__"] = files
                             seen_count += 1
+            # How many history rows to show; the "Load more" button bumps this.
+            try:
+                runs_limit = max(1, min(500, int(request.args.get("runs", 20))))
+            except (TypeError, ValueError):
+                runs_limit = 20
+            runs_total = ff.count_runs()
             ff_runs = []
-            for r in ff.list_runs(20):
+            for r in ff.list_runs(runs_limit):
                 rstats = json.loads(r.get("stats_json") or "{}")
                 ff_runs.append({
                     "id": r["id"], "seed": r.get("seed"), "prompt": r.get("prompt"),
@@ -387,6 +393,8 @@ def create_app() -> Flask:
                 "ff_rows": ff_rows,
                 "ff_stats": ff_stats,
                 "ff_runs": ff_runs,
+                "ff_runs_limit": runs_limit,
+                "ff_runs_total": runs_total,
                 "ff_sel_id": ff_run["id"] if ff_run else None,
                 "record_count": len(ff_rows),
                 "seen_count": seen_count,

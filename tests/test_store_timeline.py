@@ -31,6 +31,16 @@ def test_finish_run_without_timeline_is_null(tmp_path):
     assert run["timeline_json"] is None
 
 
+def test_count_runs_and_list_runs_limit(tmp_path):
+    s = FreeFormStore(tmp_path / "ff.sqlite")
+    for i in range(25):
+        s.start_run(f"https://a.com/{i}", "p", _cols(), now_iso())
+    assert s.count_runs() == 25            # total, regardless of list limit
+    assert len(s.list_runs(20)) == 20      # the "page" the UI shows by default
+    assert len(s.list_runs(40)) == 25      # "Load more" beyond the total caps at total
+    s.close()
+
+
 def test_migration_adds_timeline_column_to_old_db(tmp_path):
     db = tmp_path / "old.sqlite"
     # Pre-feature schema: ff_runs WITHOUT timeline_json (or batch_id).

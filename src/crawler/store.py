@@ -104,6 +104,12 @@ class FreeFormStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def count_runs(self) -> int:
+        """Total number of recorded runs (for the history 'Load more' control)."""
+        return int(self.conn.execute(
+            "SELECT COUNT(*) c FROM ff_runs"
+        ).fetchone()["c"])
+
     def records_for_run(self, run_id: int) -> list[dict]:
         rows = self.conn.execute(
             "SELECT data_json, source_url FROM ff_records WHERE run_id=? ORDER BY id",
