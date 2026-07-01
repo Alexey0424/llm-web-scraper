@@ -9,3 +9,11 @@ data/exports/
 runs/
 *.log
 node_modules/
+
+# local AI-assistant tooling and scratch notes (not part of the project)
+.agents/
+.claude/
+skills-lock.json
+_url_paper.txt
+scrapling_current_usage_context.txt
+docs/wslconfig-for-gemma4-26b.txt
