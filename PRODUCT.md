@@ -1,4 +1,4 @@
-# Discovery Crawler
+# LLM Web Scraper
 
 A back-office data tool: give it a URL + a plain-language request, and a local LLM
 crawls the site and returns the records you described as an Excel/CSV.

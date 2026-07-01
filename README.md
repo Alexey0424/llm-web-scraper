@@ -1,14 +1,15 @@
-# Discovery Crawler — LLM-guided web data extraction, 100% local
+# LLM Web Scraper — prompt in, spreadsheet out, 100% local
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen)
 ![LLM](https://img.shields.io/badge/LLM-Ollama%20·%20local-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-Give it a **seed URL** and a **plain-language prompt** naming the fields you want.
-A **local LLM** (Ollama, no external API) plans the crawl, walks the site with a
-best-first frontier, classifies pages, extracts the records, and exports them to
-Excel/CSV/JSONL — with **columns derived from your prompt**, not a fixed schema.
+Tell it what you want in plain English, hand it a **seed URL**, and come back to
+a spreadsheet. A **local LLM** (Ollama, no external API) plans the crawl, finds
+its own way through the site with a best-first frontier, classifies pages,
+extracts the records, and exports them to Excel/CSV/JSONL — with **columns
+derived from your prompt**, not a fixed schema.
 
 ```text
 "Real-estate agents in New Jersey: full name, email, phone, agency, city"
@@ -179,6 +180,13 @@ pages. It does not log in, bypass paywalls, or use proxies. The full
 code-level account of the current posture (including how to re-enable the
 strict `robots.txt` gate) is in
 [`LEGALITY_OF_THE_CRAWL.md`](LEGALITY_OF_THE_CRAWL.md).
+
+> **Disclaimer.** This project is published for educational, research and
+> portfolio purposes. If you run it, what you point it at is your
+> responsibility: check the target site's terms of service and `robots.txt`,
+> and make sure your use complies with the scraping and data-privacy laws
+> that apply in your jurisdiction. The authors and contributors accept no
+> liability for misuse of this software.
 
 ## Design docs
 
