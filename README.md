@@ -1,8 +1,11 @@
 # LLM Web Scraper — prompt in, spreadsheet out, 100% local
 
+[![Tests](https://github.com/Alexey0424/llm-web-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/Alexey0424/llm-web-scraper/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
-![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen)
-![LLM](https://img.shields.io/badge/LLM-Ollama%20·%20local-orange)
+![Flask](https://img.shields.io/badge/Flask-web%20UI-black)
+![Docker](https://img.shields.io/badge/Docker-compose-2496ED)
+![LLM](https://img.shields.io/badge/LLM-Ollama%20·%20100%25%20local-orange)
+![SQLite](https://img.shields.io/badge/SQLite-run%20history-003B57)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Tell it what you want in plain English, hand it a **seed URL**, and come back to
