@@ -7,6 +7,9 @@
 ![LLM](https://img.shields.io/badge/LLM-Ollama%20·%20100%25%20local-orange)
 ![SQLite](https://img.shields.io/badge/SQLite-run%20history-003B57)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
+<p align="center">
+  <img src="assets/hero.jpg" alt="A robot spider harvests records from webpages into a verified spreadsheet while a llama runs the LLM inside a local server, cloud cable unplugged" width="100%">
+</p>
 
 Tell it what you want in plain English, hand it a **seed URL**, and come back to
 a spreadsheet. A **local LLM** (Ollama, no external API) plans the crawl, finds
